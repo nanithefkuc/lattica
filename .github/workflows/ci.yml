@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, ${{ matrix.features }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        features: ["", "--all-features", "--no-default-features"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test ${{ matrix.features }}
+
+  msrv:
+    name: msrv 1.89
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
+      - run: cargo build --all-features
+
+  lint:
+    name: fmt, clippy, doc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo clippy --all-targets --no-default-features -- -D warnings
+      - name: rustdoc
+        run: cargo doc --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  deps:
+    name: dependency boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Charter I4: lattica is a leaf. It must never acquire `fff` (field
+      # arithmetic) or `sgraph` (layer 2) as a dependency. A convention that is
+      # only written down does not survive contact with a deadline.
+      - name: assert dependency set
+        run: |
+          tree=$(cargo tree --all-features --prefix none --no-dedupe \
+                   | awk 'NF {print $1}' | sort -u | grep -v '^lattica$' || true)
+          echo "dependencies: ${tree:-<none>}"
+          for forbidden in fff fgf sgraph cafft gfm; do
+            if echo "$tree" | grep -qx "$forbidden"; then
+              echo "::error::forbidden dependency: $forbidden"
+              exit 1
+            fi
+          done
+
+  cross-execute:
+    name: cross-execute ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-unknown-linux-gnu, i686-unknown-linux-gnu, wasm32-wasip1]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      # Invariant I2: two peers on different architectures must decode a
+      # boundary point identically. A build-only job proves nothing about
+      # that, so the fixtures in tests/vectors.rs are *executed* under
+      # emulation on every target, not merely compiled for them.
+      - uses: taiki-e/setup-cross-toolchain-action@v1
+        with:
+          target: ${{ matrix.target }}
+      - run: cargo test --target ${{ matrix.target }} --no-default-features
+
+  cross-build:
+    name: cross-build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [wasm32-unknown-unknown, aarch64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --target ${{ matrix.target }} --no-default-features
+
+  gate:
+    name: release gate (E_8 shaping gain)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # The release acceptance criterion: the nested E_8 code must reproduce the
+      # published 0.65 dB shaping gain of its Voronoi region. A decode loop
+      # that merely runs is not evidence.
+      - run: cargo run --release --example e8_awgn
+
+  miri:
+    name: miri (scalar arithmetic)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - run: cargo miri test --no-default-features
