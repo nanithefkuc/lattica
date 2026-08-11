@@ -14,9 +14,11 @@ that is `sgraph`. Not lattice cryptography, ever.
 
 ## Hard rules
 
-1. **No dependencies.** `lattica` has none today and will only ever gain
-   `archmage`. Adding `fff`, `fgf`, `sgraph`, `cafft`, or `gfm` inverts
-   the stack's layering; CI fails the build if you try.
+1. **Only dispatch dependencies.** Runtime dependencies are limited to
+   `simdispatch` for the stack-wide backend policy and `archmage` for safe
+   capability tokens, both optional under `simd`. Adding `fgf`, `sgraph`,
+   `butterfly-fft`, or `gfm` inverts the stack's layering; CI fails the build
+   if you try.
 2. **No `unsafe`.** Forbidden at the crate root.
 3. **Checked arithmetic only on the integer path.** `Int` deliberately exposes
    no `Add`/`Sub`/`Mul` operators — only `try_add`, `try_sub`, `try_mul`, and
@@ -61,10 +63,10 @@ RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
 ## Implementation status
 
 Implemented and gated by the release check: the `Int` contract, exact integer
-linear algebra, the `Z_q` ring, `Gram`/`Basis`, the named lattices, exact
-short-vector enumeration, the closed-form quantizers, `mod Λ`, nested pairs,
-Construction A/D, the fraction-free GSO, LLL, and Babai. Not yet implemented:
-Schnorr–Euchner enumeration and list decoding.
+linear algebra, the `Z_q` ring, `Gram`/`Basis`, named lattices through `BW_16`
+and `Λ_24`, exact short-vector and Voronoi-relevant enumeration, closed-form
+and maximum-likelihood quantizers, `mod Λ`, nested pairs, Construction A/D,
+fraction-free GSO, LLL, Babai, and dispatched real-vector batch transforms.
 
 Two rules specific to what is already here:
 

@@ -45,17 +45,45 @@ not a field library, and not a lattice-cryptography library.
 - **Basis reduction:** Lagrange–Gauss (dim 2), LLL, and deep-insertion LLL over
   the integral Gram matrix with an exact rational `δ`, plus size reduction.
 - **Babai** rounding and nearest-plane over a reduced basis.
+- **Budgeted exact decoding.** Prepared Schnorr–Euchner nearest-point and list
+  enumeration over general integral Gram matrices, with zig-zag child order,
+  radius shrinking, deterministic node exhaustion, and lexicographic
+  coordinate ties. List results are sorted by distance and the same total tie
+  rule. Exact parity-coset enumeration recovers low-dimensional
+  Voronoi-relevant vectors.
+- **Barnes–Wall and Leech lattices.** Published algebraic generators produce
+  exact integral Gram matrices for `BW_16` and `Λ_24`; maximum-likelihood
+  ambient and coefficient decoders use the proved enumeration core. Ambient
+  answers remain exact numerators over 2 and `sqrt(8)`, respectively.
+- **Dispatched real-vector batches.** A structure-of-arrays transform preserves
+  scalar accumulation order across AVX2 lanes and ragged tails. Stack-wide
+  backend selection comes from `simdispatch`; unmeasured and losing shapes stay
+  scalar. The scalar references are exposed by `internals`.
 - **`e8_awgn` example**, a nested `E_8` lattice code over a simulated AWGN
   channel that reproduces the published `0.6539 dB` shaping gain of the `E_8`
   Voronoi region, used as the release gate.
 
 ### Notes
 
-- Edition 2024, MSRV 1.89, and no runtime dependencies. `no_std` is not
+- Edition 2024 and MSRV 1.89. Runtime dependencies are limited to optional
+  `simdispatch` and `archmage` under the default `simd` feature. `no_std` is not
   supported: real-basis reduction needs `sqrt` and friends, and a `libm`
   dependency would cost more than `std` does.
-- `#![forbid(unsafe_code)]` at the crate root.
-- Features: `simd` (default; currently selects the portable scalar kernels) and
-  `internals` (unstable implementation APIs, exempt from compatibility
-  guarantees).
-- Not yet implemented: Schnorr–Euchner enumeration and list decoding.
+- `#![forbid(unsafe_code)]` at the crate root, including the SIMD module;
+  archmage supplies safe capability-token boundaries and memory operations.
+- Features: `simd` (default; measured AVX2 SoA batches with scalar fallback)
+  and `internals` (unstable scalar references and implementation APIs).
+- General-basis decoding requires both an explicit squared radius and a node
+  budget. Radius exhaustion is distinct from node exhaustion, so a bounded
+  search never presents an unproved candidate as a nearest point.
+- Equal-distance general-basis candidates use lexicographic basis coordinates.
+  This total order was chosen because it is independent of traversal and does
+  not change when a later kernel changes child scheduling.
+- The named high-dimensional decoders use exhaustive maximum-likelihood
+  enumeration rather than bounded-distance Barnes–Wall and hexacode shortcuts.
+  This costs a mandatory node budget but gives one honest contract: success is
+  globally nearest, while exhaustion is explicit. Measured behavior beyond the
+  unique decoding radius is in `BENCHMARKS.md`.
+- SIMD dispatch is limited to 16-output SoA batches of at least 64 vectors.
+  Smaller batches, AoS input, and other dimensions measured flat or slower and
+  remain scalar rather than gaining a speculative crossover.
