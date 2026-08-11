@@ -186,6 +186,99 @@ pub fn e8_generator() -> [[f64; 8]; 8] {
     rows
 }
 
+/// The 16-dimensional Barnes–Wall lattice `BW_16`.
+///
+/// Its Gram determinant is 256, minimal squared norm is 4, and kissing number
+/// is 4320. The constructor derives the Gram matrix from the published
+/// half-integral generator; none of those invariants is stored.
+///
+/// # Errors
+///
+/// The fixed generator is valid for every supported integer width. Errors are
+/// reported through the shared checked construction path.
+pub fn bw16<T: Int>() -> Result<Gram<T>, LatticeError> {
+    gram_from_scaled_generator(16, &BW16_NUMERATORS, 4)
+}
+
+/// The 24-dimensional Leech lattice `Λ_24`.
+///
+/// Its Gram determinant is 1, minimal squared norm is 4, and kissing number is
+/// 196560. The Gram matrix is derived from a published integer numerator
+/// matrix divided by `sqrt(8)`.
+///
+/// # Errors
+///
+/// The fixed generator is valid for every supported integer width. Errors are
+/// reported through the shared checked construction path.
+pub fn leech24<T: Int>() -> Result<Gram<T>, LatticeError> {
+    gram_from_scaled_generator(24, &LEECH24_NUMERATORS, 8)
+}
+
+fn gram_from_scaled_generator<T: Int>(
+    dimension: usize,
+    numerators: &[i8],
+    denominator_sq: i128,
+) -> Result<Gram<T>, LatticeError> {
+    let mut data = vec![T::ZERO; dimension * dimension];
+    for i in 0..dimension {
+        for j in 0..dimension {
+            let mut inner = 0i128;
+            for k in 0..dimension {
+                let product = i128::from(numerators[i * dimension + k])
+                    .checked_mul(i128::from(numerators[j * dimension + k]))
+                    .ok_or(crate::error::RangeError::Overflow {
+                        op: crate::error::Op::Mul,
+                        width_bits: 128,
+                    })?;
+                inner = inner
+                    .checked_add(product)
+                    .ok_or(crate::error::RangeError::Overflow {
+                        op: crate::error::Op::Add,
+                        width_bits: 128,
+                    })?;
+            }
+            if inner % denominator_sq != 0 {
+                return Err(LatticeError::Degenerate);
+            }
+            data[i * dimension + j] = T::narrow(inner / denominator_sq)?;
+        }
+    }
+    Gram::from_rows(dimension, &data)
+}
+
+pub(crate) const BW16_NUMERATORS: [i8; 16 * 16] = [
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 2, 0, 0, 0, 0, 0, 2, 0, 0, 0, 2, 0, 2, 0, 0,
+    0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 2,
+    0, 0, 0, 0, 2, 0, 0, 2, 0, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 0, 0, 0, 0, 2, 0, 2,
+    0, 0, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 2, 0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 2, 0, 2,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4,
+];
+
+pub(crate) const LEECH24_NUMERATORS: [i8; 24 * 24] = [
+    8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 4, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    4, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 4, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    4, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0,
+    0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 0, 0, 0, 0, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 0, 0, 2, 2, 0, 0,
+    2, 2, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 2, 2, 0, 0, 2, 2, 0, 0, 2, 2, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0,
+    4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 2, 0, 0, 2,
+    2, 2, 0, 0, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 2, 0, 0, 2, 2, 2, 0, 0, 2, 0, 2, 0, 0, 0, 0, 0,
+    2, 0, 2, 0, 0, 0, 0, 0, 2, 2, 0, 0, 2, 0, 2, 0, 2, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 2, 0, 0, 0, 0,
+    0, 2, 2, 2, 2, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    2, 2, 0, 0, 2, 2, 0, 0, 2, 2, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 2, 0, 2, 0,
+    2, 0, 2, 0, 2, 0, 2, 0, -3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1,
+];
+
 /// Builds a simply-laced Cartan matrix: 2 on the diagonal, -1 for each edge.
 fn cartan<T: Int>(n: usize, edges: &[(usize, usize)]) -> Result<Gram<T>, LatticeError> {
     let two = T::ONE.try_add(T::ONE)?;
