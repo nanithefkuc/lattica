@@ -112,6 +112,16 @@ pub enum DecodeError {
         /// The search radius in effect, squared.
         radius_sq: f64,
     },
+    /// The squared search radius was negative or non-finite.
+    InvalidRadius {
+        /// Rejected squared radius.
+        radius_sq: f64,
+    },
+    /// No lattice point lies inside the supplied search radius.
+    OutsideRadius {
+        /// Squared radius of the empty search ball.
+        radius_sq: f64,
+    },
     /// A point required to lie in the lattice did not.
     NotInLattice,
     /// An exact enumeration exceeded its node budget.
@@ -153,6 +163,12 @@ impl fmt::Display for DecodeError {
                     f,
                     "enumeration budget exhausted after {nodes} nodes at squared radius {radius_sq}"
                 )
+            }
+            Self::InvalidRadius { radius_sq } => {
+                write!(f, "invalid squared search radius {radius_sq}")
+            }
+            Self::OutsideRadius { radius_sq } => {
+                write!(f, "no lattice point within squared radius {radius_sq}")
             }
             Self::EnumerationBudget { nodes } => {
                 write!(f, "enumeration budget exhausted after {nodes} nodes")

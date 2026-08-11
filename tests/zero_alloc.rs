@@ -57,7 +57,10 @@ fn allocations_during<F: FnOnce()>(body: F) -> usize {
     ALLOCATIONS.with(Cell::get) - before
 }
 
-use lattica::quant::{An, Dn, DnPlus, Quantizer, Scratch, Zn, e8, nearest_batch};
+use lattica::named::d_n;
+use lattica::quant::{
+    An, Dn, DnPlus, EnumerationScratch, Enumerator, Quantizer, Scratch, Zn, e8, nearest_batch,
+};
 
 /// Deterministic dyadic coordinates, so the measurement is reproducible.
 struct Rng(u64);
@@ -119,6 +122,30 @@ fn a_cold_scratch_grows_once_and_never_again() {
         }
     });
     assert_eq!(warm, 0, "warm decoding allocated {warm} times");
+}
+
+#[test]
+fn steady_state_enumeration_allocates_nothing() {
+    let gram = d_n::<i64>(8).unwrap();
+    let enumerator = Enumerator::new(&gram).unwrap();
+    let mut scratch = EnumerationScratch::new();
+    let mut out = [0i64; 8];
+    let target = [0.17, -0.31, 0.43, -0.59, 0.71, -0.83, 0.97, -1.09];
+
+    enumerator
+        .nearest(&target, &mut out, 100.0, 1 << 20, &mut scratch)
+        .unwrap();
+    let allocations = allocations_during(|| {
+        for _ in 0..1_000 {
+            enumerator
+                .nearest(&target, &mut out, 100.0, 1 << 20, &mut scratch)
+                .unwrap();
+        }
+    });
+    assert_eq!(
+        allocations, 0,
+        "warm enumeration allocated {allocations} times"
+    );
 }
 
 #[test]
