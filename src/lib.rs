@@ -60,8 +60,9 @@
 //! Implemented: the scalar contract, exact integer linear algebra, the `Z_q`
 //! ring, lattice representation, the named lattices, exact short-vector
 //! enumeration, the closed-form quantizers, `mod Λ`, nested pairs,
-//! Construction A/D, the fraction-free Gram–Schmidt, LLL, and Babai.
-//! Schnorr–Euchner enumeration and list decoding are not implemented yet.
+//! Construction A/D, fraction-free GSO, LLL, Babai, budgeted
+//! Schnorr–Euchner nearest/list enumeration, low-dimensional Voronoi-relevant
+//! vectors, and dispatched real-vector batch transforms.
 //!
 //! `cargo run --release --example e8_awgn` runs a nested `E_8` lattice code
 //! over a simulated AWGN channel and checks that it reproduces the published
@@ -73,6 +74,7 @@ pub mod construct;
 pub mod error;
 pub mod gso;
 pub mod int;
+pub mod kernel;
 pub mod named;
 pub mod nested;
 pub mod quant;

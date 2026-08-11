@@ -11,13 +11,23 @@ categories = ["algorithms", "mathematics"]
 
 [features]
 default = ["simd"]
-# Reserved for archmage-dispatched batch kernels. Currently
-# selects the same portable scalar kernels as the default path.
-simd = []
+# Runtime-dispatched real-vector kernels. Selection is stack-wide through
+# simdispatch; archmage supplies safe capability tokens and memory operations.
+simd = ["dep:archmage", "dep:simdispatch"]
 # Unstable implementation APIs, exempt from compatibility guarantees.
 internals = []
 
 [dependencies]
+archmage = { git = "https://github.com/nanithefkuc/archmage", rev = "de519319b5670d93f71dada4c49cdfd83c0fc0ec", optional = true }
+simdispatch = { git = "https://github.com/nanithefkuc/simdispatch", rev = "5940194107384953cd8cd9f45c8d902b26d5686e", optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "kernel"
+harness = false
+required-features = ["internals"]
 
 [lints.rust]
 missing_docs = "deny"
