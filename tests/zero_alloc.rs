@@ -59,8 +59,10 @@ fn allocations_during<F: FnOnce()>(body: F) -> usize {
 
 use lattica::named::d_n;
 use lattica::quant::{
-    An, Dn, DnPlus, EnumerationScratch, Enumerator, Quantizer, Scratch, Zn, e8, nearest_batch,
+    An, Dn, DnPlus, EnumerationScratch, Enumerator, PreparedEnumerationScratch,
+    PreparedEnumerator, Quantizer, Scratch, Zn, e8, nearest_batch,
 };
+use lattica::reduce::Delta;
 
 /// Deterministic dyadic coordinates, so the measurement is reproducible.
 struct Rng(u64);
@@ -145,6 +147,30 @@ fn steady_state_enumeration_allocates_nothing() {
     assert_eq!(
         allocations, 0,
         "warm enumeration allocated {allocations} times"
+    );
+}
+
+#[test]
+fn steady_state_prepared_enumeration_allocates_nothing() {
+    let gram = d_n::<i64>(8).unwrap();
+    let enumerator = PreparedEnumerator::new(&gram, Delta::STRONG).unwrap();
+    let mut scratch = PreparedEnumerationScratch::new();
+    let mut out = [0i64; 8];
+    let target = [0.17, -0.31, 0.43, -0.59, 0.71, -0.83, 0.97, -1.09];
+
+    enumerator
+        .nearest_ml(&target, &mut out, 1 << 20, &mut scratch)
+        .unwrap();
+    let allocations = allocations_during(|| {
+        for _ in 0..1_000 {
+            enumerator
+                .nearest_ml(&target, &mut out, 1 << 20, &mut scratch)
+                .unwrap();
+        }
+    });
+    assert_eq!(
+        allocations, 0,
+        "warm prepared enumeration allocated {allocations} times"
     );
 }
 

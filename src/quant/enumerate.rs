@@ -10,10 +10,11 @@
 use core::cmp::Ordering;
 
 use crate::basis::Gram;
-use crate::error::{DecodeError, ReduceError};
+use crate::error::{DecodeError, Op, RangeError, ReduceError};
 use crate::gso::Gso;
-use crate::int::Int;
+use crate::int::{Int, IntMatrix, adjugate};
 use crate::quant::COORD_LIMIT;
+use crate::reduce::{Delta, lll};
 
 const ITERATIVE_DIMENSION: usize = 24;
 
@@ -64,6 +65,38 @@ impl EnumerationScratch {
             self.centers.resize(dimension, 0.0);
             self.partials.resize(dimension, 0.0);
             self.children.resize(dimension, Children::empty());
+        }
+    }
+}
+
+/// Reusable buffers for reduced-basis prepared enumeration.
+#[derive(Debug, Clone, Default)]
+pub struct PreparedEnumerationScratch {
+    enumeration: EnumerationScratch,
+    transformed_target: Vec<f64>,
+    reduced_point: Vec<i64>,
+    mapped_point: Vec<i64>,
+}
+
+impl PreparedEnumerationScratch {
+    /// Creates empty scratch space that grows on first use.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            enumeration: EnumerationScratch::new(),
+            transformed_target: Vec::new(),
+            reduced_point: Vec::new(),
+            mapped_point: Vec::new(),
+        }
+    }
+
+    /// Reserves every buffer for `dimension` coordinates.
+    pub fn reserve(&mut self, dimension: usize) {
+        self.enumeration.reserve(dimension);
+        if self.transformed_target.len() < dimension {
+            self.transformed_target.resize(dimension, 0.0);
+            self.reduced_point.resize(dimension, 0);
+            self.mapped_point.resize(dimension, 0);
         }
     }
 }
@@ -345,6 +378,112 @@ impl<T: Int> Enumerator<T> {
                 .then_with(|| a.point.cmp(&b.point))
         });
         Ok(list)
+    }
+}
+
+/// Prepared nearest-point search over a strongly reduced basis.
+///
+/// Targets and answers remain in the caller's original basis coordinates.
+/// Construction stores the unimodular basis change and its exact inverse;
+/// reported node counts belong to the transformed proof tree.
+#[derive(Debug, Clone)]
+pub struct PreparedEnumerator<T: Int> {
+    enumerator: Enumerator<T>,
+    transform: IntMatrix<T>,
+    inverse: IntMatrix<T>,
+}
+
+impl<T: Int> PreparedEnumerator<T> {
+    /// Reduces `gram` at `delta` and prepares enumeration over the result.
+    ///
+    /// # Errors
+    ///
+    /// As [`lll`] and [`Enumerator::new`], including checked overflow while
+    /// constructing the exact unimodular inverse.
+    pub fn new(gram: &Gram<T>, delta: Delta) -> Result<Self, ReduceError> {
+        let reduced = lll(gram, delta)?;
+        let determinant = reduced.transform.det()?;
+        let mut inverse = adjugate(&reduced.transform)?;
+        let negative_one = T::ZERO.try_sub(T::ONE)?;
+        if determinant == negative_one {
+            for row in 0..inverse.rows() {
+                inverse.negate_row(row)?;
+            }
+        } else {
+            debug_assert_eq!(determinant, T::ONE);
+        }
+        let enumerator = Enumerator::new(&reduced.gram)?;
+        Ok(Self {
+            enumerator,
+            transform: reduced.transform,
+            inverse,
+        })
+    }
+
+    /// Lattice dimension.
+    #[must_use]
+    pub const fn dim(&self) -> usize {
+        self.enumerator.dim()
+    }
+
+    /// Unimodular map from reduced coordinates to original coordinates.
+    #[must_use]
+    pub const fn transform(&self) -> &IntMatrix<T> {
+        &self.transform
+    }
+
+    /// Finds and proves the globally nearest point.
+    ///
+    /// `target` and `out` use the original basis coordinates. The returned node
+    /// count is for enumeration in the reduced basis.
+    ///
+    /// # Errors
+    ///
+    /// As [`Enumerator::nearest_ml`], plus [`DecodeError::Range`] if mapping
+    /// the exact reduced answer back exceeds `i64`.
+    pub fn nearest_ml(
+        &self,
+        target: &[f64],
+        out: &mut [i64],
+        node_budget: u64,
+        scratch: &mut PreparedEnumerationScratch,
+    ) -> Result<u64, DecodeError> {
+        validate(self.dim(), target, out.len(), 0.0)?;
+        scratch.reserve(self.dim());
+        for column in 0..self.dim() {
+            let mut total = 0.0;
+            for (row, &value) in target.iter().enumerate() {
+                total += value * self.inverse.get(row, column).widen() as f64;
+            }
+            scratch.transformed_target[column] = total;
+        }
+
+        let nodes = self.enumerator.nearest_ml(
+            &scratch.transformed_target[..self.dim()],
+            &mut scratch.reduced_point[..self.dim()],
+            node_budget,
+            &mut scratch.enumeration,
+        )?;
+        for column in 0..self.dim() {
+            let mut total = 0i128;
+            for row in 0..self.dim() {
+                let product = i128::from(scratch.reduced_point[row])
+                    .checked_mul(self.transform.get(row, column).widen())
+                    .ok_or(RangeError::Overflow {
+                        op: Op::Mul,
+                        width_bits: i128::BITS,
+                    })?;
+                total = total
+                    .checked_add(product)
+                    .ok_or(RangeError::Overflow {
+                        op: Op::Add,
+                        width_bits: i128::BITS,
+                    })?;
+            }
+            scratch.mapped_point[column] = <i64 as Int>::narrow(total)?;
+        }
+        out.copy_from_slice(&scratch.mapped_point[..self.dim()]);
+        Ok(nodes)
     }
 }
 
