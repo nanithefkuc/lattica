@@ -348,7 +348,7 @@ impl<T: Int> Enumerator<T> {
                 list: &mut list,
             };
             walk.run(self.dim(), 0.0)?;
-            list.sort_by(|a, b| {
+            list.sort_unstable_by(|a, b| {
                 a.distance_sq
                     .total_cmp(&b.distance_sq)
                     .then_with(|| a.point.cmp(&b.point))
@@ -372,7 +372,7 @@ impl<T: Int> Enumerator<T> {
             list: &mut list,
         };
         walk.run()?;
-        list.sort_by(|a, b| {
+        list.sort_unstable_by(|a, b| {
             a.distance_sq
                 .total_cmp(&b.distance_sq)
                 .then_with(|| a.point.cmp(&b.point))
