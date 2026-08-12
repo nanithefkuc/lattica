@@ -1,5 +1,10 @@
 # Optimization roadmap
 
+**Status: done (2026-08-12).** Selected changes passed the behavior,
+exactness, decoder, SIMD differential, allocation, performance, regression, and
+release-proof gates. Unselected avenues remain recorded below with their
+evidence thresholds; `BENCHMARKS.md` records why they were not enabled.
+
 A private engineering map for making `lattica` faster without weakening the
 contracts that make its answers useful. This is deliberately broader than a
 release plan: it records every credible optimization avenue found in the
