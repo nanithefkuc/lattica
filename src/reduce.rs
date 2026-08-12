@@ -294,6 +294,10 @@ impl<T: Int> State<T> {
         Gso::from_symmetric_matrix(&self.gram)
     }
 
+    fn refactor_gso(&self, gso: &mut Gso<T>) -> Result<(), ReduceError> {
+        gso.refactor_from_symmetric_matrix(&self.gram)
+    }
+
     fn swap(&mut self, i: usize, j: usize) {
         self.gram.swap_rows(i, j);
         self.gram.swap_cols(i, j);
@@ -370,17 +374,15 @@ fn reduce_with<T: Int>(
 ) -> Result<Reduced<T>, ReduceError> {
     let n = gram.dim();
     let mut state = State::new(gram)?;
+    let mut gso = state.gso()?;
     if n < 2 {
-        state.gso()?;
         return Ok(state.finish());
     }
-
-    state.gso()?;
     let mut steps = 0u64;
     let mut k = 1usize;
     while k < n {
         guard(&mut steps, BUDGET)?;
-        let mut gso = state.gso()?;
+        state.refactor_gso(&mut gso)?;
 
         // Size-reduce b_k against every earlier vector, largest index first.
         // The lambda update after each step keeps the remaining quotients
@@ -391,7 +393,7 @@ fn reduce_with<T: Int>(
                 continue;
             }
             state.subtract(k, j, quotient)?;
-            gso = state.gso()?;
+            state.refactor_gso(&mut gso)?;
         }
 
         if deep {
