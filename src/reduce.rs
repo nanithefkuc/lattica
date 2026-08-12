@@ -382,7 +382,6 @@ fn reduce_with<T: Int>(
     let mut k = 1usize;
     while k < n {
         guard(&mut steps, BUDGET)?;
-        state.refactor_gso(&mut gso)?;
 
         // Size-reduce b_k against every earlier vector, largest index first.
         // The lambda update after each step keeps the remaining quotients
@@ -399,6 +398,7 @@ fn reduce_with<T: Int>(
         if deep {
             if let Some(target) = deep_insertion_point(&gso, k, delta)? {
                 state.rotate(k, target);
+                state.refactor_gso(&mut gso)?;
                 k = target.max(1);
                 continue;
             }
@@ -407,6 +407,7 @@ fn reduce_with<T: Int>(
             k += 1;
         } else {
             state.swap(k - 1, k);
+            gso.swap_adjacent(k)?;
             k = (k - 1).max(1);
         }
     }
