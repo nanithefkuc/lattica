@@ -89,6 +89,11 @@ The incremental exact LLL path changed the 16-basis comparison corpus from
 `86.622 µs`, `3.3341 ms`, and `28.167 ms` per basis at dimensions 8, 16, and 24
 to `7.561 µs`, `68.165 µs`, and `249.814 µs`. The speedups are `11.5x`, `48.9x`,
 and `112.8x`; every measured reduction uses one factorization and one Gram copy.
+An `f64` estimate layer was not added: after incremental exact updates, the
+largest comparison case is `112.8x` faster while retaining a single exact
+factorization. The remaining checked updates are not the dominant measured
+cost, so approximate scheduling would add a second state without a supported
+crossover.
 Warm CVP on the same comparison corpus improved from `1.512 µs`, `16.540 µs`,
 and `120.107 µs` to `0.635 µs`, `4.795 µs`, and `24.699 µs`, with unchanged
 target, point, and distance fingerprints.
