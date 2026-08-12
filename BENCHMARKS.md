@@ -71,6 +71,41 @@ Ambient outputs retain exact algebraic scaling. `BW_16` returns numerators over
 points was rejected because it would turn a discrete answer into a rounding
 question.
 
+## Optimization corpus
+
+Command:
+
+```sh
+taskset -c 2 cargo bench --bench optimization --features internals
+```
+
+Measured 2026-08-12 on the same Intel Core Ultra 7 258V and `rustc 1.93.0`.
+The harness separates LLL operations and certificate work; CVP preparation,
+nodes, and nanoseconds per node; named-decoder setup and total latency; exact
+algebra operations; and closed-form batch quantizers. Every row carries a
+geometry name and deterministic correctness fingerprint.
+
+The incremental exact LLL path changed the 16-basis comparison corpus from
+`86.622 µs`, `3.3341 ms`, and `28.167 ms` per basis at dimensions 8, 16, and 24
+to `7.561 µs`, `68.165 µs`, and `249.814 µs`. The speedups are `11.5x`, `48.9x`,
+and `112.8x`; every measured reduction uses one factorization and one Gram copy.
+Warm CVP on the same comparison corpus improved from `1.512 µs`, `16.540 µs`,
+and `120.107 µs` to `0.635 µs`, `4.795 µs`, and `24.699 µs`, with unchanged
+target, point, and distance fingerprints.
+
+The exact-algebra corpus identified structural cases worth selecting. For a
+24-dimensional unit lower-bidiagonal matrix, triangular determinant selection
+measures `0.39 µs`; one fraction-free adjugate solve measures `0.235 ms`; and
+the one-factorization positive-definiteness check measures `0.030 ms`.
+
+A five-run `perf stat` of the complete pinned corpus reported medians of
+`951,444,719` P-core cycles, `5,515,777,396` P-core instructions,
+`490,275,530` P-core branches, `2,776,408` P-core branch misses, and `7,052`
+P-core cache misses. Elapsed task-clock dispersion was `0.93%`. Generated
+release assembly was inspected after `cargo rustc --release --features
+internals --lib -- --emit=asm`; the hot enumeration loop remains scalar and
+contains no square-root call after child construction was rewritten.
+
 ## fplll comparison
 
 [`fplll`](https://github.com/fplll/fplll) overlaps with this crate at LLL
