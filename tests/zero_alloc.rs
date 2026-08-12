@@ -57,12 +57,18 @@ fn allocations_during<F: FnOnce()>(body: F) -> usize {
     ALLOCATIONS.with(Cell::get) - before
 }
 
+use core::num::NonZeroU32;
+
+use lattica::construct::{CodeMembership, ConstructionA};
+use lattica::error::DecodeError;
 use lattica::named::d_n;
 use lattica::quant::{
     An, Dn, DnPlus, EnumerationScratch, Enumerator, PreparedEnumerationScratch,
     PreparedEnumerator, Quantizer, Scratch, Zn, e8, nearest_batch,
 };
+use lattica::quant::relevant::relevant_vectors;
 use lattica::reduce::Delta;
+use lattica::shortvec::census;
 
 /// Deterministic dyadic coordinates, so the measurement is reproducible.
 struct Rng(u64);
@@ -171,6 +177,75 @@ fn steady_state_prepared_enumeration_allocates_nothing() {
     assert_eq!(
         allocations, 0,
         "warm prepared enumeration allocated {allocations} times"
+    );
+}
+
+struct ParityCheck;
+
+impl CodeMembership for ParityCheck {
+    fn modulus(&self) -> NonZeroU32 {
+        NonZeroU32::new(2).unwrap()
+    }
+
+    fn length(&self) -> usize {
+        4
+    }
+
+    fn cardinality(&self) -> u64 {
+        8
+    }
+
+    fn contains(&self, residues: &[u32]) -> bool {
+        residues.iter().sum::<u32>().is_multiple_of(2)
+    }
+
+    fn decode_costs(&self, costs: &[f64], out: &mut [u32]) -> Result<(), DecodeError> {
+        if costs.len() != 8 || out.len() != 4 {
+            return Err(DecodeError::LengthMismatch {
+                expected: 4,
+                found: out.len(),
+            });
+        }
+        out.fill(0);
+        Ok(())
+    }
+}
+
+#[test]
+fn repeated_materialized_workload_allocations_are_counted() {
+    let gram = d_n::<i64>(4).unwrap();
+    let enumerator = Enumerator::new(&gram).unwrap();
+    let mut scratch = EnumerationScratch::new();
+    let target = [0.17, -0.31, 0.43, -0.59];
+
+    let list_allocations = allocations_during(|| {
+        let points = enumerator.list(&target, 4.0, 1 << 20, &mut scratch).unwrap();
+        assert!(!points.is_empty());
+    });
+    assert!(list_allocations > 0, "list output was not allocation-proportional");
+
+    let relevant_allocations = allocations_during(|| {
+        assert!(!relevant_vectors(&gram, 1 << 20).unwrap().is_empty());
+    });
+    assert!(
+        relevant_allocations > 0,
+        "relevant-vector materialization did not allocate"
+    );
+
+    let census_allocations = allocations_during(|| {
+        assert!(census(&gram, 1 << 20).unwrap().min_norm_sq.is_some());
+    });
+    assert!(census_allocations > 0, "cold exact census did not allocate");
+
+    let construction = ConstructionA::new(ParityCheck).unwrap();
+    let membership_allocations = allocations_during(|| {
+        for _ in 0..100 {
+            assert!(construction.contains(&[1, 1, 0, 0]).unwrap());
+        }
+    });
+    assert_eq!(
+        membership_allocations, 100,
+        "Construction A membership allocation count changed"
     );
 }
 
