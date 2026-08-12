@@ -85,9 +85,10 @@ pub fn det<T: Int>(a: &IntMatrix<T>) -> Result<T, RangeError> {
 /// information as `A⁻¹` with no rationals, so identities that would otherwise
 /// need fractions stay checkable in integers.
 ///
-/// Cost is `n²` determinants of size `n-1`. That is fine at the dimensions
-/// lattice work reaches and hopeless beyond them, which is the correct trade
-/// for an exact operation.
+/// Uses fraction-free Gauss–Jordan elimination, sharing one decomposition
+/// across every identity right-hand side. Singular inputs and fixed-width
+/// recurrences that exceed their budget fall back to direct cofactors so the
+/// accepted input domain does not shrink.
 ///
 /// # Errors
 ///
@@ -101,14 +102,74 @@ pub fn adjugate<T: Int>(a: &IntMatrix<T>) -> Result<IntMatrix<T>, RangeError> {
             found: a.cols(),
         });
     }
-    let mut out = IntMatrix::<T>::zeros(n, n)?;
     if n == 0 {
-        return Ok(out);
+        return IntMatrix::<T>::zeros(0, 0);
     }
     if n == 1 {
-        out.set(0, 0, T::ONE);
-        return Ok(out);
+        return IntMatrix::<T>::identity(1);
     }
+    match fraction_free_adjugate(a) {
+        Ok(Some(out)) => Ok(out),
+        Ok(None) | Err(_) => adjugate_cofactors(a),
+    }
+}
+
+fn fraction_free_adjugate<T: Int>(
+    a: &IntMatrix<T>,
+) -> Result<Option<IntMatrix<T>>, RangeError> {
+    let n = a.rows();
+    let mut left = a.clone();
+    let mut right = IntMatrix::<T>::identity(n)?;
+    let mut previous = T::ONE;
+    let mut negated = false;
+
+    for k in 0..n {
+        let Some(pivot_row) = (k..n).find(|&row| !left.get(row, k).is_zero()) else {
+            return Ok(None);
+        };
+        if pivot_row != k {
+            left.swap_rows(k, pivot_row);
+            right.swap_rows(k, pivot_row);
+            negated = !negated;
+        }
+        let pivot = left.get(k, k);
+        for row in 0..n {
+            if row == k {
+                continue;
+            }
+            let leading = left.get(row, k);
+            for column in 0..n {
+                if column != k {
+                    let value = left
+                        .get(row, column)
+                        .try_mul(pivot)?
+                        .try_sub(leading.try_mul(left.get(k, column))?)?
+                        .try_div_exact(previous)?;
+                    left.set(row, column, value);
+                }
+                let value = right
+                    .get(row, column)
+                    .try_mul(pivot)?
+                    .try_sub(leading.try_mul(right.get(k, column))?)?
+                    .try_div_exact(previous)?;
+                right.set(row, column, value);
+            }
+            left.set(row, k, T::ZERO);
+        }
+        previous = pivot;
+    }
+
+    if negated {
+        for row in 0..n {
+            right.negate_row(row)?;
+        }
+    }
+    Ok(Some(right))
+}
+
+fn adjugate_cofactors<T: Int>(a: &IntMatrix<T>) -> Result<IntMatrix<T>, RangeError> {
+    let n = a.rows();
+    let mut out = IntMatrix::<T>::zeros(n, n)?;
     let mut minor = IntMatrix::<T>::zeros(n - 1, n - 1)?;
     for i in 0..n {
         for j in 0..n {
