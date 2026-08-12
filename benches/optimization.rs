@@ -59,7 +59,11 @@ fn skew_basis(dimension: usize, case: usize, shear_bits: u32) -> Vec<i128> {
             source = (source + 1) % dimension;
         }
         let magnitude = i128::from((rng.next() & mask).max(1));
-        let factor = if rng.next() & 1 == 0 { magnitude } else { -magnitude };
+        let factor = if rng.next() & 1 == 0 {
+            magnitude
+        } else {
+            -magnitude
+        };
         let source_row = basis[source * dimension..(source + 1) * dimension].to_vec();
         for column in 0..dimension {
             basis[target * dimension + column] += factor * source_row[column];
@@ -84,9 +88,7 @@ fn benchmark_lll() {
             let fingerprint: i128 = bases
                 .iter()
                 .enumerate()
-                .map(|(index, gram)| {
-                    i128::try_from(index + 1).unwrap() * gram.det().unwrap()
-                })
+                .map(|(index, gram)| i128::try_from(index + 1).unwrap() * gram.det().unwrap())
                 .sum();
 
             let elapsed = measured(|| {
@@ -103,16 +105,37 @@ fn benchmark_lll() {
                     black_box(reduced.transform.det().unwrap());
                 }
             });
-            let per_basis = elapsed.as_secs_f64() * 1e9 / bases.len() as f64;
-            let certificate_ns = certificate.as_secs_f64() * 1e9 / bases.len() as f64;
+            let basis_count = f64::from(u32::try_from(bases.len()).unwrap());
+            let per_basis = elapsed.as_secs_f64() * 1e9 / basis_count;
+            let certificate_ns = certificate.as_secs_f64() * 1e9 / basis_count;
             println!("lll_ns,{dimension},shear_{shear_bits},{per_basis:.2},{fingerprint}");
-            println!("lll_certificate_ns,{dimension},shear_{shear_bits},{certificate_ns:.2},{fingerprint}");
-            println!("lll_factorizations,{dimension},shear_{shear_bits},{},{fingerprint}", stats.factorizations);
-            println!("lll_size_reductions,{dimension},shear_{shear_bits},{},{fingerprint}", stats.size_reductions);
-            println!("lll_swaps,{dimension},shear_{shear_bits},{},{fingerprint}", stats.swaps);
-            println!("lll_iterations,{dimension},shear_{shear_bits},{},{fingerprint}", stats.iterations);
-            println!("lll_gram_copies,{dimension},shear_{shear_bits},{},{fingerprint}", stats.gram_copies);
-            println!("lll_checked_updates,{dimension},shear_{shear_bits},{},{fingerprint}", stats.checked_updates);
+            println!(
+                "lll_certificate_ns,{dimension},shear_{shear_bits},{certificate_ns:.2},{fingerprint}"
+            );
+            println!(
+                "lll_factorizations,{dimension},shear_{shear_bits},{},{fingerprint}",
+                stats.factorizations
+            );
+            println!(
+                "lll_size_reductions,{dimension},shear_{shear_bits},{},{fingerprint}",
+                stats.size_reductions
+            );
+            println!(
+                "lll_swaps,{dimension},shear_{shear_bits},{},{fingerprint}",
+                stats.swaps
+            );
+            println!(
+                "lll_iterations,{dimension},shear_{shear_bits},{},{fingerprint}",
+                stats.iterations
+            );
+            println!(
+                "lll_gram_copies,{dimension},shear_{shear_bits},{},{fingerprint}",
+                stats.gram_copies
+            );
+            println!(
+                "lll_checked_updates,{dimension},shear_{shear_bits},{},{fingerprint}",
+                stats.checked_updates
+            );
         }
     }
 }
@@ -135,7 +158,11 @@ fn benchmark_cvp() {
     for dimension in DIMENSIONS {
         let gram = cvp_gram(dimension);
         let prepare = measured(|| black_box(Enumerator::new(black_box(&gram)).unwrap()));
-        println!("cvp_prepare_ns,{dimension},single,{:.2},{}", prepare.as_secs_f64() * 1e9, gram.det().unwrap());
+        println!(
+            "cvp_prepare_ns,{dimension},single,{:.2},{}",
+            prepare.as_secs_f64() * 1e9,
+            gram.det().unwrap()
+        );
         let enumerator = Enumerator::new(&gram).unwrap();
         let mut scratch = EnumerationScratch::new();
         let mut out = vec![0i64; dimension];
@@ -166,7 +193,10 @@ fn benchmark_cvp() {
             let ns = elapsed.as_secs_f64() * 1e9;
             println!("cvp_nodes,{dimension},{class},{expected},{fingerprint}");
             println!("cvp_warm_ns,{dimension},{class},{ns:.2},{fingerprint}");
-            println!("cvp_ns_per_node,{dimension},{class},{:.2},{fingerprint}", ns / expected.max(1) as f64);
+            println!(
+                "cvp_ns_per_node,{dimension},{class},{:.2},{fingerprint}",
+                ns / f64::from(u32::try_from(expected.max(1)).unwrap())
+            );
             println!("cvp_max_depth,{dimension},{class},{dimension},{fingerprint}");
         }
     }
@@ -175,8 +205,14 @@ fn benchmark_cvp() {
 fn benchmark_named() {
     let bw_setup = measured(|| black_box(BarnesWall16::new().unwrap()));
     let leech_setup = measured(|| black_box(Leech24::new().unwrap()));
-    println!("named_setup_ns,16,bw16,{:.2},16", bw_setup.as_secs_f64() * 1e9);
-    println!("named_setup_ns,24,leech,{:.2},24", leech_setup.as_secs_f64() * 1e9);
+    println!(
+        "named_setup_ns,16,bw16,{:.2},16",
+        bw_setup.as_secs_f64() * 1e9
+    );
+    println!(
+        "named_setup_ns,24,leech,{:.2},24",
+        leech_setup.as_secs_f64() * 1e9
+    );
 
     let bw = BarnesWall16::new().unwrap();
     let leech = Leech24::new().unwrap();
@@ -192,15 +228,36 @@ fn benchmark_named() {
         .nearest(&ambient24, &mut out24, NODE_BUDGET, &mut scratch)
         .unwrap();
     let total16 = measured(|| {
-        black_box(bw.nearest(&ambient16, &mut out16, NODE_BUDGET, &mut scratch).unwrap());
+        black_box(
+            bw.nearest(&ambient16, &mut out16, NODE_BUDGET, &mut scratch)
+                .unwrap(),
+        );
     });
     let total24 = measured(|| {
-        black_box(leech.nearest(&ambient24, &mut out24, NODE_BUDGET, &mut scratch).unwrap());
+        black_box(
+            leech
+                .nearest(&ambient24, &mut out24, NODE_BUDGET, &mut scratch)
+                .unwrap(),
+        );
     });
-    println!("named_total_ns,16,bw16,{:.2},{}", total16.as_secs_f64() * 1e9, out16.iter().sum::<i64>());
-    println!("named_total_ns,24,leech,{:.2},{}", total24.as_secs_f64() * 1e9, out24.iter().sum::<i64>());
-    println!("named_nodes,16,bw16,{nodes16},{}", out16.iter().sum::<i64>());
-    println!("named_nodes,24,leech,{nodes24},{}", out24.iter().sum::<i64>());
+    println!(
+        "named_total_ns,16,bw16,{:.2},{}",
+        total16.as_secs_f64() * 1e9,
+        out16.iter().sum::<i64>()
+    );
+    println!(
+        "named_total_ns,24,leech,{:.2},{}",
+        total24.as_secs_f64() * 1e9,
+        out24.iter().sum::<i64>()
+    );
+    println!(
+        "named_nodes,16,bw16,{nodes16},{}",
+        out16.iter().sum::<i64>()
+    );
+    println!(
+        "named_nodes,24,leech,{nodes24},{}",
+        out24.iter().sum::<i64>()
+    );
 }
 
 fn algebra_matrix(dimension: usize) -> IntMatrix<i128> {
@@ -236,7 +293,10 @@ fn benchmark_algebra() {
             ("hnf_mod_det", hnf_mod_time),
             ("snf", snf_time),
         ] {
-            println!("algebra_ns,{dimension},{name},{:.2},{fingerprint}", duration.as_secs_f64() * 1e9);
+            println!(
+                "algebra_ns,{dimension},{name},{:.2},{fingerprint}",
+                duration.as_secs_f64() * 1e9
+            );
         }
     }
 }
@@ -253,7 +313,7 @@ fn benchmark_quantizers() {
         for vectors in [1usize, 8, 64, 257] {
             let dimension = quantizer.dim();
             let input: Vec<f64> = (0..dimension * vectors)
-                .map(|index| (index % 31) as f64 / 16.0 - 0.9375)
+                .map(|index| f64::from(u32::try_from(index % 31).unwrap()) / 16.0 - 0.9375)
                 .collect();
             let mut output = vec![0i64; input.len()];
             let mut scratch = Scratch::new(dimension);
@@ -267,7 +327,10 @@ fn benchmark_quantizers() {
                 .unwrap();
             });
             let fingerprint: i128 = output.iter().map(|value| i128::from(*value)).sum();
-            println!("quantizer_batch_ns,{dimension},{name}_{vectors},{:.2},{fingerprint}", duration.as_secs_f64() * 1e9);
+            println!(
+                "quantizer_batch_ns,{dimension},{name}_{vectors},{:.2},{fingerprint}",
+                duration.as_secs_f64() * 1e9
+            );
         }
     }
 }
