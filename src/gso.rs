@@ -42,7 +42,7 @@ use crate::error::{RangeError, ReduceError};
 use crate::int::{Int, IntMatrix};
 
 /// The fraction-free Gram–Schmidt data of a positive-definite Gram matrix.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Gso<T: Int> {
     n: usize,
     /// Bareiss upper-triangular form, row-major. `upper[j * n + i]` is
@@ -50,7 +50,17 @@ pub struct Gso<T: Int> {
     upper: Vec<T>,
     /// Leading principal minors, `minors[0] = 1` through `minors[n]`.
     minors: Vec<T>,
+    /// Transactional storage for one elementary update.
+    update: Vec<T>,
 }
+
+impl<T: Int> PartialEq for Gso<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.n == other.n && self.upper == other.upper && self.minors == other.minors
+    }
+}
+
+impl<T: Int> Eq for Gso<T> {}
 
 impl<T: Int> Gso<T> {
     /// Computes the orthogonalization.
@@ -76,6 +86,7 @@ impl<T: Int> Gso<T> {
             n,
             upper: vec![T::ZERO; n * n],
             minors: vec![T::ZERO; n + 1],
+            update: vec![T::ZERO; n],
         };
         gso.refactor_from_symmetric_matrix(matrix)?;
         Ok(gso)
@@ -114,6 +125,36 @@ impl<T: Int> Gso<T> {
             }
             previous = pivot;
             self.minors[k + 1] = pivot;
+        }
+        Ok(())
+    }
+
+    /// Updates the exact factorization for `b_target -= factor * b_source`.
+    ///
+    /// A reduction by an earlier vector leaves every leading subspace and
+    /// orthogonal vector unchanged. Only the coefficients of `b_target`
+    /// through `b_source` change.
+    pub(crate) fn size_reduce(
+        &mut self,
+        target: usize,
+        source: usize,
+        factor: T,
+    ) -> Result<(), RangeError> {
+        debug_assert!(source < target && target < self.n);
+        if factor.is_zero() {
+            return Ok(());
+        }
+        for j in 0..source {
+            self.update[j] = self
+                .lambda(target, j)
+                .try_sub(factor.try_mul(self.lambda(source, j))?)?;
+        }
+        self.update[source] = self
+            .lambda(target, source)
+            .try_sub(factor.try_mul(self.minor(source + 1))?)?;
+
+        for j in 0..=source {
+            self.upper[j * self.n + target] = self.update[j];
         }
         Ok(())
     }
@@ -214,7 +255,8 @@ impl<T: Int> Gso<T> {
 #[cfg(test)]
 mod tests {
     use super::Gso;
-    use crate::basis::Gram;
+    use crate::basis::{Basis, Gram};
+    use crate::int::IntMatrix;
     use crate::named::{a_n, d_n, e8, zn};
 
     #[test]
@@ -300,6 +342,44 @@ mod tests {
             e8::<i64>().unwrap(),
         ] {
             assert!(!Gso::new(&g).unwrap().is_size_reduced().unwrap());
+        }
+    }
+
+    #[test]
+    fn size_reduction_updates_match_fresh_factorization() {
+        let n = 7;
+        let mut basis = Vec::with_capacity(n * n);
+        for row in 0..n {
+            for column in 0..n {
+                let value = if row == column {
+                    3
+                } else if column < row {
+                    i64::try_from((row * 5 + column * 3) % 5).unwrap() - 2
+                } else {
+                    0
+                };
+                basis.push(value);
+            }
+        }
+        let gram = Basis::from_rows(n, n, &basis).unwrap().gram().unwrap();
+        let mut matrix = gram.as_matrix().clone();
+        let mut updated = Gso::new(&gram).unwrap();
+
+        for target in 1..n {
+            for source in (0..target).rev() {
+                let factor = i64::try_from((target * 3 + source * 2) % 5).unwrap() - 2;
+                if factor == 0 {
+                    continue;
+                }
+                matrix.row_sub_mul(target, source, factor).unwrap();
+                matrix.col_sub_mul(target, source, factor).unwrap();
+                updated.size_reduce(target, source, factor).unwrap();
+                let fresh_gram = Gram::new(
+                    IntMatrix::from_rows(n, n, matrix.as_slice()).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(updated, Gso::new(&fresh_gram).unwrap());
+            }
         }
     }
 }
