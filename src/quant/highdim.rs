@@ -14,7 +14,8 @@ use crate::error::{DecodeError, LatticeError, Op, RangeError, ReduceError};
 use crate::int::{Int, adjugate};
 use crate::named::{BW16_NUMERATORS, LEECH24_NUMERATORS, bw16, leech24};
 use crate::quant::COORD_LIMIT;
-use crate::quant::enumerate::{EnumerationScratch, Enumerator};
+use crate::quant::enumerate::{PreparedEnumerationScratch, PreparedEnumerator};
+use crate::reduce::Delta;
 
 /// Reusable buffers for the `BW_16` and Leech ambient decoders.
 #[derive(Debug, Clone, Default)]
@@ -22,7 +23,7 @@ pub struct AmbientScratch {
     coefficients: Vec<f64>,
     coordinates: Vec<i64>,
     numerators: Vec<i64>,
-    enumeration: EnumerationScratch,
+    enumeration: PreparedEnumerationScratch,
 }
 
 impl AmbientScratch {
@@ -33,7 +34,7 @@ impl AmbientScratch {
             coefficients: Vec::new(),
             coordinates: Vec::new(),
             numerators: Vec::new(),
-            enumeration: EnumerationScratch::new(),
+            enumeration: PreparedEnumerationScratch::new(),
         }
     }
 
@@ -50,7 +51,7 @@ impl AmbientScratch {
 
 #[derive(Debug, Clone)]
 struct AmbientCore<const N: usize> {
-    enumerator: Enumerator<i64>,
+    enumerator: PreparedEnumerator<i64>,
     /// Column-major transform from ambient coordinates to basis coefficients.
     dual: Vec<f64>,
     numerators: &'static [i8],
@@ -86,7 +87,8 @@ impl<const N: usize> AmbientCore<N> {
                 dual[k * N + j] = numerator as f64 / (determinant as f64 * scale);
             }
         }
-        let enumerator = Enumerator::new(gram).map_err(reduce_to_lattice)?;
+        let enumerator =
+            PreparedEnumerator::new(gram, Delta::STRONG).map_err(reduce_to_lattice)?;
         Ok(Self {
             enumerator,
             dual,
