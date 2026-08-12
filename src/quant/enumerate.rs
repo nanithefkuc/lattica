@@ -198,6 +198,54 @@ impl<T: Int> Enumerator<T> {
         Ok(search.nodes)
     }
 
+    fn seeded_radius(
+        &self,
+        target: &[f64],
+        candidate: &[i64],
+        radius_sq: f64,
+    ) -> Result<f64, DecodeError> {
+        validate(self.dim(), target, self.dim(), radius_sq)?;
+        if candidate.len() != self.dim() {
+            return Err(DecodeError::LengthMismatch {
+                expected: self.dim(),
+                found: candidate.len(),
+            });
+        }
+        let actual_sq = triangular_distance(&self.mu, &self.weights, target, candidate)?;
+        if actual_sq > radius_sq {
+            return Err(DecodeError::InvalidRadius { radius_sq });
+        }
+        let envelope = f64::EPSILON * radius_sq.abs().max(1.0) * (4 * self.dim()) as f64;
+        Ok(radius_sq + envelope)
+    }
+
+    /// Finds the nearest point using a validated lattice candidate as the
+    /// initial proof radius.
+    ///
+    /// This unstable entry point is available only with `internals`. The
+    /// candidate is an integer basis-coordinate vector. Its supplied squared
+    /// radius is checked against the prepared triangular metric before search,
+    /// so it can only tighten the proof tree, never prune the candidate itself.
+    ///
+    /// # Errors
+    ///
+    /// As [`nearest`](Self::nearest), plus [`DecodeError::InvalidRadius`] when
+    /// the supplied candidate lies outside `radius_sq`.
+    #[cfg(feature = "internals")]
+    pub fn nearest_seeded(
+        &self,
+        target: &[f64],
+        out: &mut [i64],
+        candidate: &[i64],
+        radius_sq: f64,
+        node_budget: u64,
+        scratch: &mut EnumerationScratch,
+    ) -> Result<u64, DecodeError> {
+        validate(self.dim(), target, out.len(), radius_sq)?;
+        let search_radius = self.seeded_radius(target, candidate, radius_sq)?;
+        self.nearest(target, out, search_radius, node_budget, scratch)
+    }
+
     /// Finds the unrestricted nearest lattice point.
     ///
     /// Babai nearest-plane supplies a finite radius containing a lattice point;
@@ -230,11 +278,9 @@ impl<T: Int> Enumerator<T> {
             target,
             &scratch.best[..self.dim()],
         )?;
-        // The same positive terms are accumulated along a recursive path in
-        // `nearest`; allow one small rounding envelope so the Babai point that
-        // established the radius cannot fall a few ulps outside its own ball.
-        let envelope = f64::EPSILON * candidate_sq.abs().max(1.0) * (4 * self.dim()) as f64;
-        self.nearest(target, out, candidate_sq + envelope, node_budget, scratch)
+        let search_radius =
+            self.seeded_radius(target, &scratch.best[..self.dim()], candidate_sq)?;
+        self.nearest(target, out, search_radius, node_budget, scratch)
     }
 
     /// Returns every lattice point inside `radius_sq`.
