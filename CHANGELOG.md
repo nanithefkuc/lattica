@@ -59,6 +59,11 @@ not a field library, and not a lattice-cryptography library.
   scalar accumulation order across AVX2 lanes and ragged tails. Stack-wide
   backend selection comes from `simdispatch`; unmeasured and losing shapes stay
   scalar. The scalar references are exposed by `internals`.
+- **Competitor benchmark.** A pinned, in-process fplll 5.5.0 harness compares
+  LLL and public CVP calls on identical deterministic inputs, with input,
+  output, and distance fingerprints. The record includes reproducible fplll
+  `CVPM_PROVED` correctness and Babai-cycle failures discovered while making
+  the comparison fair.
 - **`e8_awgn` example**, a nested `E_8` lattice code over a simulated AWGN
   channel that reproduces the published `0.6539 dB` shaping gain of the `E_8`
   Voronoi region, used as the release gate.

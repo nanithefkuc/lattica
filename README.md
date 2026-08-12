@@ -86,8 +86,8 @@ cargo build --features internals
 cargo test
 ```
 
-Kernel crossovers and the reproducible high-dimensional decoder measurements
-are recorded in [`BENCHMARKS.md`](BENCHMARKS.md).
+Kernel crossovers, high-dimensional decoder measurements, and the reproducible
+fplll comparison are recorded in [`BENCHMARKS.md`](BENCHMARKS.md).
 
 `lattica` is **not** `no_std`: real-basis reduction needs `sqrt` and friends,
 and a `libm` dependency would cost more than `std` does.

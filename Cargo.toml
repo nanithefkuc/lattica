@@ -29,6 +29,10 @@ name = "kernel"
 harness = false
 required-features = ["internals"]
 
+[[bench]]
+name = "fplll_compare"
+harness = false
+
 [lints.rust]
 missing_docs = "deny"
 # `forbid` lives in src/lib.rs so that integration tests may install a
