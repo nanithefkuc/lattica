@@ -120,6 +120,12 @@ The exact-algebra corpus identified structural cases worth selecting. For a
 24-dimensional unit lower-bidiagonal matrix, triangular determinant selection
 measures `0.39 µs`; one fraction-free adjugate solve measures `0.235 ms`; and
 the one-factorization positive-definiteness check measures `0.030 ms`.
+Canonical HNF and SNF were left on their existing exact paths. At dimension 24
+the measured medians are `2.32 µs` for classical HNF, `3.94 µs` for
+determinant-modular HNF, and `3.56 µs` for invariant factors; no repeated
+consumer workload selects among them. The same evidence rejects a generic
+matrix-storage rewrite: half-matrix Gram construction removes the proved
+duplicate work without adding a second dense layout or column cache.
 
 A five-run `perf stat` of the complete pinned corpus reported medians of
 `951,444,719` P-core cycles, `5,515,777,396` P-core instructions,
