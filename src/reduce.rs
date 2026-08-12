@@ -162,6 +162,40 @@ pub fn lll_deep<T: Int>(gram: &Gram<T>, delta: Delta) -> Result<Reduced<T>, Redu
     reduce_with(gram, delta, true)
 }
 
+/// Reduces with LLL while returning unstable benchmark counters.
+///
+/// Available only with `internals`; counters are not a compatibility promise.
+///
+/// # Errors
+///
+/// As [`lll`].
+#[cfg(feature = "internals")]
+pub fn lll_profiled<T: Int>(
+    gram: &Gram<T>,
+    delta: Delta,
+) -> Result<(Reduced<T>, ReductionStats), ReduceError> {
+    let mut stats = ReductionStats::default();
+    let reduced = reduce_observed(gram, delta, false, &mut stats)?;
+    Ok((reduced, stats))
+}
+
+/// Reduces with deep-insertion LLL while returning unstable benchmark counters.
+///
+/// Available only with `internals`; counters are not a compatibility promise.
+///
+/// # Errors
+///
+/// As [`lll_deep`].
+#[cfg(feature = "internals")]
+pub fn lll_deep_profiled<T: Int>(
+    gram: &Gram<T>,
+    delta: Delta,
+) -> Result<(Reduced<T>, ReductionStats), ReduceError> {
+    let mut stats = ReductionStats::default();
+    let reduced = reduce_observed(gram, delta, true, &mut stats)?;
+    Ok((reduced, stats))
+}
+
 /// Lagrange–Gauss reduction of a rank-two lattice.
 ///
 /// Returns a basis of two shortest possible vectors: in the plane, unlike in
@@ -267,6 +301,76 @@ fn guard(steps: &mut u64, budget: u64) -> Result<(), ReduceError> {
     Ok(())
 }
 
+trait ReductionObserver {
+    fn gram_copy(&mut self) {}
+    fn factorization(&mut self, _dimension: usize) {}
+    fn iteration(&mut self) {}
+    fn size_reduction(&mut self, _checked_updates: u64) {}
+    fn swaps(&mut self, _count: u64, _checked_updates: u64) {}
+    fn deep_insertion(&mut self) {}
+}
+
+struct Unobserved;
+
+impl ReductionObserver for Unobserved {}
+
+/// Internal operation counters for exact basis reduction benchmarks.
+///
+/// `checked_updates` counts checked integer operations in factorization and
+/// elementary state recurrences. Predicate and quotient arithmetic is reported
+/// separately by wall time rather than folded into this partial count.
+#[cfg(feature = "internals")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReductionStats {
+    /// Full exact factorizations.
+    pub factorizations: u64,
+    /// Completed reduction-loop iterations.
+    pub iterations: u64,
+    /// Nonzero size reductions.
+    pub size_reductions: u64,
+    /// Adjacent basis swaps.
+    pub swaps: u64,
+    /// Deep insertions.
+    pub deep_insertions: u64,
+    /// Full Gram buffers copied.
+    pub gram_copies: u64,
+    /// Checked operations in factorization and elementary updates.
+    pub checked_updates: u64,
+}
+
+#[cfg(feature = "internals")]
+impl ReductionObserver for ReductionStats {
+    fn gram_copy(&mut self) {
+        self.gram_copies += 1;
+    }
+
+    fn factorization(&mut self, dimension: usize) {
+        self.factorizations += 1;
+        for remaining in (0..dimension).rev() {
+            let entries = u64::try_from(remaining * remaining).unwrap_or(u64::MAX);
+            self.checked_updates = self.checked_updates.saturating_add(4 * entries);
+        }
+    }
+
+    fn iteration(&mut self) {
+        self.iterations += 1;
+    }
+
+    fn size_reduction(&mut self, checked_updates: u64) {
+        self.size_reductions += 1;
+        self.checked_updates += checked_updates;
+    }
+
+    fn swaps(&mut self, count: u64, checked_updates: u64) {
+        self.swaps += count;
+        self.checked_updates += checked_updates;
+    }
+
+    fn deep_insertion(&mut self) {
+        self.deep_insertions += 1;
+    }
+}
+
 /// Symmetric Gram matrix plus its accumulated transform.
 ///
 /// Row scratch makes a checked congruence operation transactional without
@@ -303,11 +407,12 @@ impl<T: Int> State<T> {
 
     /// `b_target -= factor * b_source`, applied to both the Gram matrix and the
     /// transform.
-    fn subtract(&mut self, target: usize, source: usize, factor: T) -> Result<(), RangeError> {
+    fn subtract(&mut self, target: usize, source: usize, factor: T) -> Result<u64, RangeError> {
         if factor.is_zero() {
-            return Ok(());
+            return Ok(0);
         }
         let n = self.gram.rows();
+        let mut checked_updates = 0u64;
 
         // Match the old row-then-column operation order while preflighting
         // every checked expression. The diagonal sees the already-updated
@@ -318,6 +423,7 @@ impl<T: Int> State<T> {
             self.gram_row[column] = if source_value.is_zero() {
                 target_value
             } else {
+                checked_updates += 2;
                 target_value.try_sub(factor.try_mul(source_value)?)?
             };
 
@@ -326,6 +432,7 @@ impl<T: Int> State<T> {
             self.transform_row[column] = if source_value.is_zero() {
                 target_value
             } else {
+                checked_updates += 2;
                 target_value.try_sub(factor.try_mul(source_value)?)?
             };
         }
@@ -334,6 +441,7 @@ impl<T: Int> State<T> {
         self.gram_row[target] = if row_source.is_zero() {
             row_diagonal
         } else {
+            checked_updates += 2;
             row_diagonal.try_sub(factor.try_mul(row_source)?)?
         };
 
@@ -346,7 +454,7 @@ impl<T: Int> State<T> {
             self.transform
                 .set(target, column, self.transform_row[column]);
         }
-        Ok(())
+        Ok(checked_updates)
     }
 
     /// Moves row `from` down to position `to`, shifting the rest up while
@@ -372,9 +480,20 @@ fn reduce_with<T: Int>(
     delta: Delta,
     deep: bool,
 ) -> Result<Reduced<T>, ReduceError> {
+    reduce_observed(gram, delta, deep, &mut Unobserved)
+}
+
+fn reduce_observed<T: Int, O: ReductionObserver>(
+    gram: &Gram<T>,
+    delta: Delta,
+    deep: bool,
+    observer: &mut O,
+) -> Result<Reduced<T>, ReduceError> {
     let n = gram.dim();
     let mut state = State::new(gram)?;
+    observer.gram_copy();
     let mut gso = state.gso()?;
+    observer.factorization(n);
     if n < 2 {
         return Ok(state.finish());
     }
@@ -382,22 +501,32 @@ fn reduce_with<T: Int>(
     let mut k = 1usize;
     while k < n {
         guard(&mut steps, BUDGET)?;
+        observer.iteration();
 
         // Size-reduce b_k against every earlier vector, largest index first.
-        // The lambda update after each step keeps the remaining quotients
-        // correct without a full recomputation.
         for j in (0..k).rev() {
             let quotient = div_nearest(gso.lambda(k, j), gso.minor(j + 1))?;
             if quotient.is_zero() {
                 continue;
             }
-            state.subtract(k, j, quotient)?;
+            let state_updates = state.subtract(k, j, quotient)?;
             gso.size_reduce(k, j, quotient)?;
+            observer.size_reduction(state_updates + 2 * u64::try_from(j + 1).unwrap_or(u64::MAX));
         }
 
         if deep {
             if let Some(target) = deep_insertion_point(&gso, k, delta)? {
                 state.rotate(k, target, &mut gso)?;
+                observer.deep_insertion();
+                let mut checked_updates = 0u64;
+                for swapped in (target + 1)..=k {
+                    checked_updates +=
+                        4 + 8 * u64::try_from(n - swapped - 1).unwrap_or(u64::MAX);
+                }
+                observer.swaps(
+                    u64::try_from(k - target).unwrap_or(u64::MAX),
+                    checked_updates,
+                );
                 k = target.max(1);
                 continue;
             }
@@ -407,6 +536,10 @@ fn reduce_with<T: Int>(
         } else {
             state.swap(k - 1, k);
             gso.swap_adjacent(k)?;
+            observer.swaps(
+                1,
+                4 + 8 * u64::try_from(n - k - 1).unwrap_or(u64::MAX),
+            );
             k = (k - 1).max(1);
         }
     }
