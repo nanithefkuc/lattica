@@ -187,24 +187,24 @@ pub fn gauss<T: Int>(gram: &Gram<T>) -> Result<Reduced<T>, ReduceError> {
     let mut steps = 0u64;
     loop {
         guard(&mut steps, BUDGET)?;
-        if state.gram.entry(0, 0) > state.gram.entry(1, 1) {
+        if state.gram.get(0, 0) > state.gram.get(1, 1) {
             state.swap(0, 1);
         }
-        let norm = state.gram.entry(0, 0);
+        let norm = state.gram.get(0, 0);
         if norm.is_zero() {
             return Err(ReduceError::NotFullRank {
                 rank: 0,
                 required: 2,
             });
         }
-        let quotient = div_nearest(state.gram.entry(0, 1), norm)?;
+        let quotient = div_nearest(state.gram.get(0, 1), norm)?;
         if quotient.is_zero() {
             break;
         }
         state.subtract(1, 0, quotient)?;
     }
     // Leave the shorter vector first.
-    if state.gram.entry(0, 0) > state.gram.entry(1, 1) {
+    if state.gram.get(0, 0) > state.gram.get(1, 1) {
         state.swap(0, 1);
     }
     Ok(state.finish())
@@ -267,27 +267,36 @@ fn guard(steps: &mut u64, budget: u64) -> Result<(), ReduceError> {
     Ok(())
 }
 
-/// Gram matrix plus accumulated transform, with the row operations that keep
-/// them in step.
+/// Symmetric Gram matrix plus its accumulated transform.
+///
+/// Row scratch makes a checked congruence operation transactional without
+/// cloning either matrix. Symmetry is preserved by construction and validated
+/// once when the public result is materialized.
 struct State<T: Int> {
-    gram: Gram<T>,
+    gram: IntMatrix<T>,
     transform: IntMatrix<T>,
+    gram_row: Vec<T>,
+    transform_row: Vec<T>,
 }
 
 impl<T: Int> State<T> {
     fn new(gram: &Gram<T>) -> Result<Self, ReduceError> {
         let n = gram.dim();
         Ok(Self {
-            gram: gram.clone(),
+            gram: gram.as_matrix().clone(),
             transform: IntMatrix::identity(n)?,
+            gram_row: vec![T::ZERO; n],
+            transform_row: vec![T::ZERO; n],
         })
     }
 
+    fn gso(&self) -> Result<Gso<T>, ReduceError> {
+        Gso::from_symmetric_matrix(&self.gram)
+    }
+
     fn swap(&mut self, i: usize, j: usize) {
-        let mut m = self.gram.as_matrix().clone();
-        m.swap_rows(i, j);
-        m.swap_cols(i, j);
-        self.gram = Gram::new(m).expect("a symmetric permutation stays symmetric");
+        self.gram.swap_rows(i, j);
+        self.gram.swap_cols(i, j);
         self.transform.swap_rows(i, j);
     }
 
@@ -297,11 +306,46 @@ impl<T: Int> State<T> {
         if factor.is_zero() {
             return Ok(());
         }
-        let mut m = self.gram.as_matrix().clone();
-        m.row_sub_mul(target, source, factor)?;
-        m.col_sub_mul(target, source, factor)?;
-        self.gram = Gram::new(m).expect("a congruence keeps symmetry");
-        self.transform.row_sub_mul(target, source, factor)
+        let n = self.gram.rows();
+
+        // Match the old row-then-column operation order while preflighting
+        // every checked expression. The diagonal sees the already-updated
+        // target/source entry during the column operation.
+        for column in 0..n {
+            let target_value = self.gram.get(target, column);
+            let source_value = self.gram.get(source, column);
+            self.gram_row[column] = if source_value.is_zero() {
+                target_value
+            } else {
+                target_value.try_sub(factor.try_mul(source_value)?)?
+            };
+
+            let target_value = self.transform.get(target, column);
+            let source_value = self.transform.get(source, column);
+            self.transform_row[column] = if source_value.is_zero() {
+                target_value
+            } else {
+                target_value.try_sub(factor.try_mul(source_value)?)?
+            };
+        }
+        let row_diagonal = self.gram_row[target];
+        let row_source = self.gram_row[source];
+        self.gram_row[target] = if row_source.is_zero() {
+            row_diagonal
+        } else {
+            row_diagonal.try_sub(factor.try_mul(row_source)?)?
+        };
+
+        for column in 0..n {
+            let value = self.gram_row[column];
+            self.gram.set(target, column, value);
+            if column != target {
+                self.gram.set(column, target, value);
+            }
+            self.transform
+                .set(target, column, self.transform_row[column]);
+        }
+        Ok(())
     }
 
     /// Moves row `from` down to position `to`, shifting the rest up.
@@ -313,7 +357,7 @@ impl<T: Int> State<T> {
 
     fn finish(self) -> Reduced<T> {
         Reduced {
-            gram: self.gram,
+            gram: Gram::new(self.gram).expect("reduction preserves symmetry"),
             transform: self.transform,
         }
     }
@@ -327,16 +371,16 @@ fn reduce_with<T: Int>(
     let n = gram.dim();
     let mut state = State::new(gram)?;
     if n < 2 {
-        Gso::new(&state.gram)?;
+        state.gso()?;
         return Ok(state.finish());
     }
 
-    Gso::new(&state.gram)?;
+    state.gso()?;
     let mut steps = 0u64;
     let mut k = 1usize;
     while k < n {
         guard(&mut steps, BUDGET)?;
-        let mut gso = Gso::new(&state.gram)?;
+        let mut gso = state.gso()?;
 
         // Size-reduce b_k against every earlier vector, largest index first.
         // The lambda update after each step keeps the remaining quotients
@@ -347,7 +391,7 @@ fn reduce_with<T: Int>(
                 continue;
             }
             state.subtract(k, j, quotient)?;
-            gso = Gso::new(&state.gram)?;
+            gso = state.gso()?;
         }
 
         if deep {

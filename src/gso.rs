@@ -39,7 +39,7 @@
 
 use crate::basis::Gram;
 use crate::error::{RangeError, ReduceError};
-use crate::int::Int;
+use crate::int::{Int, IntMatrix};
 
 /// The fraction-free Gram–Schmidt data of a positive-definite Gram matrix.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,8 +62,17 @@ impl<T: Int> Gso<T> {
     /// and so is not the Gram matrix of a basis; [`ReduceError::Range`] if an
     /// intermediate exceeds the element width.
     pub fn new(gram: &Gram<T>) -> Result<Self, ReduceError> {
-        let n = gram.dim();
-        let mut work = gram.as_matrix().as_slice().to_vec();
+        Self::from_symmetric_matrix(gram.as_matrix())
+    }
+
+    /// Factors a square matrix whose symmetry was established by its owner.
+    ///
+    /// Reduction keeps symmetry by construction and deliberately validates it
+    /// only when materializing the public result.
+    pub(crate) fn from_symmetric_matrix(matrix: &IntMatrix<T>) -> Result<Self, ReduceError> {
+        let n = matrix.rows();
+        debug_assert_eq!(n, matrix.cols());
+        let mut work = matrix.as_slice().to_vec();
         let mut minors = Vec::with_capacity(n + 1);
         minors.push(T::ONE);
 
