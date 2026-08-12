@@ -107,6 +107,15 @@ solve, and both would add per-node or per-word work to the default path.
 Single-word subtree scheduling remains deferred; independent received words are
 the deterministic parallel boundary.
 
+The specialized Barnes–Wall recursion and Leech hexacode candidate engines were
+not selected after this measurement. Preconditioned exhaustive search already
+meets the ML sweep without exhaustion, so a second candidate implementation
+would add tables, scratch, and a new membership proof without a failing workload
+to recover. Decoder construction remains setup work: measured medians are
+`69.6 µs` for `BW_16` and `177.7 µs` for `Λ_24`. Precomputed dual tables were
+also rejected because they would replace independently checked exact
+construction for an unmeasured cold-path saving.
+
 The exact-algebra corpus identified structural cases worth selecting. For a
 24-dimensional unit lower-bidiagonal matrix, triangular determinant selection
 measures `0.39 µs`; one fraction-free adjugate solve measures `0.235 ms`; and
