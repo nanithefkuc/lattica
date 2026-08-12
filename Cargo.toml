@@ -33,6 +33,11 @@ required-features = ["internals"]
 name = "fplll_compare"
 harness = false
 
+[[bench]]
+name = "optimization"
+harness = false
+required-features = ["internals"]
+
 [lints.rust]
 missing_docs = "deny"
 # `forbid` lives in src/lib.rs so that integration tests may install a
