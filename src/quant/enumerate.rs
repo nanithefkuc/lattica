@@ -305,12 +305,8 @@ impl<T: Int> Enumerator<T> {
             &mut scratch.coefficients[..self.dim()],
             &mut scratch.best[..self.dim()],
         )?;
-        let candidate_sq = triangular_distance(
-            &self.mu,
-            &self.weights,
-            target,
-            &scratch.best[..self.dim()],
-        )?;
+        let candidate_sq =
+            triangular_distance(&self.mu, &self.weights, target, &scratch.best[..self.dim()])?;
         let search_radius =
             self.seeded_radius(target, &scratch.best[..self.dim()], candidate_sq)?;
         self.nearest(target, out, search_radius, node_budget, scratch)
@@ -473,12 +469,10 @@ impl<T: Int> PreparedEnumerator<T> {
                         op: Op::Mul,
                         width_bits: i128::BITS,
                     })?;
-                total = total
-                    .checked_add(product)
-                    .ok_or(RangeError::Overflow {
-                        op: Op::Add,
-                        width_bits: i128::BITS,
-                    })?;
+                total = total.checked_add(product).ok_or(RangeError::Overflow {
+                    op: Op::Add,
+                    width_bits: i128::BITS,
+                })?;
             }
             scratch.mapped_point[column] = <i64 as Int>::narrow(total)?;
         }
@@ -546,8 +540,7 @@ impl RecursiveSearch<'_> {
         }
         let level = depth - 1;
         let value = center(self.mu, self.target, self.point, level)?;
-        let Some(children) =
-            Children::new(value, self.radius_sq - partial, self.weights[level])
+        let Some(children) = Children::new(value, self.radius_sq - partial, self.weights[level])
         else {
             return Ok(());
         };
@@ -592,8 +585,7 @@ impl RecursiveListSearch<'_> {
         }
         let level = depth - 1;
         let value = center(self.mu, self.target, self.point, level)?;
-        let Some(children) =
-            Children::new(value, self.radius_sq - partial, self.weights[level])
+        let Some(children) = Children::new(value, self.radius_sq - partial, self.weights[level])
         else {
             return Ok(());
         };
@@ -635,9 +627,8 @@ impl Search<'_> {
     fn enter(&mut self, level: usize, partial: f64) {
         let value = self.centers[level];
         self.partials[level] = partial;
-        self.children[level] =
-            Children::new(value, self.radius_sq - partial, self.weights[level])
-                .unwrap_or_else(Children::empty);
+        self.children[level] = Children::new(value, self.radius_sq - partial, self.weights[level])
+            .unwrap_or_else(Children::empty);
     }
 
     fn consider(&mut self, distance_sq: f64) {
@@ -651,7 +642,6 @@ impl Search<'_> {
             self.found = true;
         }
     }
-
 
     fn run(&mut self) -> Result<(), DecodeError> {
         let n = self.target.len();
@@ -711,11 +701,9 @@ impl ListSearch<'_> {
     fn enter(&mut self, level: usize, partial: f64) {
         let value = self.centers[level];
         self.partials[level] = partial;
-        self.children[level] =
-            Children::new(value, self.radius_sq - partial, self.weights[level])
-                .unwrap_or_else(Children::empty);
+        self.children[level] = Children::new(value, self.radius_sq - partial, self.weights[level])
+            .unwrap_or_else(Children::empty);
     }
-
 
     fn run(&mut self) -> Result<(), DecodeError> {
         let n = self.target.len();
@@ -784,13 +772,7 @@ fn initialize_centers(
     Ok(())
 }
 
-fn update_centers(
-    mu: &[f64],
-    point: &mut [i64],
-    centers: &mut [f64],
-    level: usize,
-    value: i64,
-) {
+fn update_centers(mu: &[f64], point: &mut [i64], centers: &mut [f64], level: usize, value: i64) {
     let old = point[level];
     if old == value {
         return;
@@ -822,12 +804,7 @@ fn triangular_distance(
     }
 }
 
-fn center(
-    mu: &[f64],
-    target: &[f64],
-    point: &[i64],
-    level: usize,
-) -> Result<f64, DecodeError> {
+fn center(mu: &[f64], target: &[f64], point: &[i64], level: usize) -> Result<f64, DecodeError> {
     let n = target.len();
     let mut value = target[level];
     for j in level + 1..n {

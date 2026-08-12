@@ -398,7 +398,6 @@ impl<T: Int> State<T> {
         Gso::from_symmetric_matrix(&self.gram)
     }
 
-
     fn swap(&mut self, i: usize, j: usize) {
         self.gram.swap_rows(i, j);
         self.gram.swap_cols(i, j);
@@ -520,8 +519,7 @@ fn reduce_observed<T: Int, O: ReductionObserver>(
                 observer.deep_insertion();
                 let mut checked_updates = 0u64;
                 for swapped in (target + 1)..=k {
-                    checked_updates +=
-                        4 + 8 * u64::try_from(n - swapped - 1).unwrap_or(u64::MAX);
+                    checked_updates += 4 + 8 * u64::try_from(n - swapped - 1).unwrap_or(u64::MAX);
                 }
                 observer.swaps(
                     u64::try_from(k - target).unwrap_or(u64::MAX),
@@ -536,10 +534,7 @@ fn reduce_observed<T: Int, O: ReductionObserver>(
         } else {
             state.swap(k - 1, k);
             gso.swap_adjacent(k)?;
-            observer.swaps(
-                1,
-                4 + 8 * u64::try_from(n - k - 1).unwrap_or(u64::MAX),
-            );
+            observer.swaps(1, 4 + 8 * u64::try_from(n - k - 1).unwrap_or(u64::MAX));
             k = (k - 1).max(1);
         }
     }
