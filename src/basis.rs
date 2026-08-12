@@ -17,7 +17,8 @@
 //! [`Basis`] exists for the lattices that do have an integral ambient basis. It
 //! is a way to *construct* a Gram matrix, and a way to cross-check one.
 
-use super::error::{LatticeError, RangeError};
+use super::error::{LatticeError, RangeError, ReduceError};
+use super::gso::Gso;
 use super::int::{Int, IntMatrix, det, hnf};
 
 /// An integral generator matrix: one lattice basis vector per row, in ambient
@@ -227,18 +228,14 @@ impl<T: Int> Gram<T> {
     ///
     /// [`RangeError::Overflow`] if a minor exceeds the element width.
     pub fn is_positive_definite(&self) -> Result<bool, RangeError> {
-        for k in 1..=self.dim() {
-            let mut sub = IntMatrix::<T>::zeros(k, k)?;
-            for i in 0..k {
-                for j in 0..k {
-                    sub.set(i, j, self.m.get(i, j));
-                }
-            }
-            if det(&sub)? <= T::ZERO {
-                return Ok(false);
+        match Gso::new(self) {
+            Ok(_) => Ok(true),
+            Err(ReduceError::NotFullRank { .. } | ReduceError::Singular) => Ok(false),
+            Err(ReduceError::Range(error)) => Err(error),
+            Err(ReduceError::BudgetExhausted { .. }) => {
+                unreachable!("factorization has no iterative search")
             }
         }
-        Ok(true)
     }
 
     /// The adjugate, satisfying `adj(G) · G == det(G) · I`.
