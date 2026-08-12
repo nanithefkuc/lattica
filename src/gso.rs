@@ -86,7 +86,7 @@ impl<T: Int> Gso<T> {
             n,
             upper: vec![T::ZERO; n * n],
             minors: vec![T::ZERO; n + 1],
-            update: vec![T::ZERO; n],
+            update: vec![T::ZERO; 2 * n],
         };
         gso.refactor_from_symmetric_matrix(matrix)?;
         Ok(gso)
@@ -155,6 +155,48 @@ impl<T: Int> Gso<T> {
 
         for j in 0..=source {
             self.upper[j * self.n + target] = self.update[j];
+        }
+        Ok(())
+    }
+
+    /// Updates the exact factorization after swapping `b_{k-1}` and `b_k`.
+    pub(crate) fn swap_adjacent(&mut self, k: usize) -> Result<(), RangeError> {
+        debug_assert!(k > 0 && k < self.n);
+        let previous = k - 1;
+        let lambda = self.lambda(k, previous);
+        let old_minor = self.minor(k);
+        let new_minor = self
+            .minor(previous)
+            .try_mul(self.minor(k + 1))?
+            .try_add(lambda.try_mul(lambda)?)?
+            .try_div_exact(old_minor)?;
+
+        for j in 0..previous {
+            self.update[j] = self.lambda(k, j);
+            self.update[self.n + j] = self.lambda(previous, j);
+        }
+        for i in k + 1..self.n {
+            self.update[i] = self
+                .lambda(i, previous)
+                .try_mul(lambda)?
+                .try_add(self.lambda(i, k).try_mul(self.minor(previous))?)?
+                .try_div_exact(old_minor)?;
+            self.update[self.n + i] = self
+                .lambda(i, previous)
+                .try_mul(self.minor(k + 1))?
+                .try_sub(self.lambda(i, k).try_mul(lambda)?)?
+                .try_div_exact(old_minor)?;
+        }
+
+        self.minors[k] = new_minor;
+        self.upper[previous * self.n + previous] = new_minor;
+        for j in 0..previous {
+            self.upper[j * self.n + previous] = self.update[j];
+            self.upper[j * self.n + k] = self.update[self.n + j];
+        }
+        for i in k + 1..self.n {
+            self.upper[previous * self.n + i] = self.update[i];
+            self.upper[k * self.n + i] = self.update[self.n + i];
         }
         Ok(())
     }
@@ -380,6 +422,33 @@ mod tests {
                 .unwrap();
                 assert_eq!(updated, Gso::new(&fresh_gram).unwrap());
             }
+        }
+    }
+
+    #[test]
+    fn adjacent_swap_updates_match_fresh_factorization() {
+        let n = 8;
+        let mut basis = Vec::with_capacity(n * n);
+        for row in 0..n {
+            for column in 0..n {
+                basis.push(if row == column {
+                    4
+                } else {
+                    i64::try_from((row * 7 + column * 5 + 1) % 7).unwrap() - 3
+                });
+            }
+        }
+        let gram = Basis::from_rows(n, n, &basis).unwrap().gram().unwrap();
+        let mut matrix = gram.as_matrix().clone();
+        let mut updated = Gso::new(&gram).unwrap();
+
+        for k in (1..n).chain((1..n).rev()) {
+            matrix.swap_rows(k - 1, k);
+            matrix.swap_cols(k - 1, k);
+            updated.swap_adjacent(k).unwrap();
+            let fresh_gram =
+                Gram::new(IntMatrix::from_rows(n, n, matrix.as_slice()).unwrap()).unwrap();
+            assert_eq!(updated, Gso::new(&fresh_gram).unwrap());
         }
     }
 }
