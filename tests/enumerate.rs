@@ -12,8 +12,12 @@ use lattica::named::{d_n, d_n_basis, e8, e8_generator, zn};
 use lattica::quant::babai::distance_sq;
 use lattica::quant::closed::{Dn, e8 as e8_quantizer};
 use lattica::quant::relevant::relevant_vectors;
-use lattica::quant::{EnumerationScratch, Enumerator, Quantizer, Scratch};
+use lattica::quant::{
+    EnumerationScratch, Enumerator, PreparedEnumerationScratch, PreparedEnumerator, Quantizer,
+    Scratch,
+};
 use lattica::shortvec::DEFAULT_NODE_BUDGET;
+use lattica::reduce::Delta;
 
 const DECODE_BUDGET: u64 = 1 << 20;
 
@@ -108,6 +112,50 @@ fn seeded_radius_is_validated_before_proof_search() {
         )
         .unwrap();
     assert_eq!(out, candidate);
+}
+
+#[test]
+fn prepared_reduced_basis_maps_the_proved_answer_back() {
+    let basis = Basis::from_rows(
+        4,
+        4,
+        &[
+            7i64, 2, 0, 0, //
+            5, 3, 1, 0, //
+            4, -2, 5, 1, //
+            9, 1, -3, 4,
+        ],
+    )
+    .unwrap();
+    let gram = basis.gram().unwrap();
+    let direct = Enumerator::new(&gram).unwrap();
+    let prepared = PreparedEnumerator::new(&gram, Delta::STRONG).unwrap();
+    let target = [1.25, -0.375, 2.125, -1.75];
+
+    let mut direct_out = [0; 4];
+    direct
+        .nearest_ml(
+            &target,
+            &mut direct_out,
+            DECODE_BUDGET,
+            &mut EnumerationScratch::new(),
+        )
+        .unwrap();
+    let mut prepared_out = [0; 4];
+    prepared
+        .nearest_ml(
+            &target,
+            &mut prepared_out,
+            DECODE_BUDGET,
+            &mut PreparedEnumerationScratch::new(),
+        )
+        .unwrap();
+
+    assert_eq!(prepared_out, direct_out);
+    assert_eq!(
+        distance_sq(&gram, &target, &prepared_out).unwrap(),
+        distance_sq(&gram, &target, &direct_out).unwrap()
+    );
 }
 
 #[test]

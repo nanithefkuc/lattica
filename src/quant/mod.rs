@@ -50,7 +50,9 @@ pub mod relevant;
 use crate::error::{DecodeError, Op, RangeError};
 
 pub use closed::{An, Dn, DnPlus, Zn, e8, round_nearest, round_nearest_flipped};
-pub use enumerate::{EnumerationScratch, Enumerator, ListPoint};
+pub use enumerate::{
+    EnumerationScratch, Enumerator, ListPoint, PreparedEnumerationScratch, PreparedEnumerator,
+};
 pub use highdim::{AmbientScratch, BarnesWall16, Leech24};
 pub use modulo::{Scaled, mod_lattice, mod_lattice_dithered};
 
