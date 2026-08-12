@@ -72,13 +72,30 @@ impl<T: Int> Gso<T> {
     pub(crate) fn from_symmetric_matrix(matrix: &IntMatrix<T>) -> Result<Self, ReduceError> {
         let n = matrix.rows();
         debug_assert_eq!(n, matrix.cols());
-        let mut work = matrix.as_slice().to_vec();
-        let mut minors = Vec::with_capacity(n + 1);
-        minors.push(T::ONE);
+        let mut gso = Self {
+            n,
+            upper: vec![T::ZERO; n * n],
+            minors: vec![T::ZERO; n + 1],
+        };
+        gso.refactor_from_symmetric_matrix(matrix)?;
+        Ok(gso)
+    }
+
+    /// Reuses this factorization's buffers for another matrix of the same
+    /// dimension.
+    pub(crate) fn refactor_from_symmetric_matrix(
+        &mut self,
+        matrix: &IntMatrix<T>,
+    ) -> Result<(), ReduceError> {
+        let n = matrix.rows();
+        debug_assert_eq!(n, matrix.cols());
+        debug_assert_eq!(n, self.n);
+        self.upper.copy_from_slice(matrix.as_slice());
+        self.minors[0] = T::ONE;
 
         let mut previous = T::ONE;
         for k in 0..n {
-            let pivot = work[k * n + k];
+            let pivot = self.upper[k * n + k];
             if pivot <= T::ZERO {
                 return Err(ReduceError::NotFullRank {
                     rank: k,
@@ -86,24 +103,19 @@ impl<T: Int> Gso<T> {
                 });
             }
             for i in k + 1..n {
-                let leading = work[i * n + k];
+                let leading = self.upper[i * n + k];
                 for j in k + 1..n {
-                    let cross = work[i * n + j]
+                    let cross = self.upper[i * n + j]
                         .try_mul(pivot)?
-                        .try_sub(leading.try_mul(work[k * n + j])?)?;
-                    work[i * n + j] = cross.try_div_exact(previous)?;
+                        .try_sub(leading.try_mul(self.upper[k * n + j])?)?;
+                    self.upper[i * n + j] = cross.try_div_exact(previous)?;
                 }
-                work[i * n + k] = T::ZERO;
+                self.upper[i * n + k] = T::ZERO;
             }
             previous = pivot;
-            minors.push(pivot);
+            self.minors[k + 1] = pivot;
         }
-
-        Ok(Self {
-            n,
-            upper: work,
-            minors,
-        })
+        Ok(())
     }
 
     /// The dimension.
