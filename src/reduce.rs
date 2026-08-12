@@ -294,9 +294,6 @@ impl<T: Int> State<T> {
         Gso::from_symmetric_matrix(&self.gram)
     }
 
-    fn refactor_gso(&self, gso: &mut Gso<T>) -> Result<(), ReduceError> {
-        gso.refactor_from_symmetric_matrix(&self.gram)
-    }
 
     fn swap(&mut self, i: usize, j: usize) {
         self.gram.swap_rows(i, j);
@@ -352,11 +349,14 @@ impl<T: Int> State<T> {
         Ok(())
     }
 
-    /// Moves row `from` down to position `to`, shifting the rest up.
-    fn rotate(&mut self, from: usize, to: usize) {
+    /// Moves row `from` down to position `to`, shifting the rest up while
+    /// updating the exact factorization after every adjacent swap.
+    fn rotate(&mut self, from: usize, to: usize, gso: &mut Gso<T>) -> Result<(), RangeError> {
         for k in (to..from).rev() {
             self.swap(k, k + 1);
+            gso.swap_adjacent(k + 1)?;
         }
+        Ok(())
     }
 
     fn finish(self) -> Reduced<T> {
@@ -397,8 +397,7 @@ fn reduce_with<T: Int>(
 
         if deep {
             if let Some(target) = deep_insertion_point(&gso, k, delta)? {
-                state.rotate(k, target);
-                state.refactor_gso(&mut gso)?;
+                state.rotate(k, target, &mut gso)?;
                 k = target.max(1);
                 continue;
             }
@@ -434,22 +433,22 @@ fn deep_insertion_point<T: Int>(
     k: usize,
     delta: Delta,
 ) -> Result<Option<usize>, RangeError> {
-    for i in 0..k {
-        let mut scale = T::ONE;
-        for j in i..=k {
-            scale = lcm(scale, gso.minor(j).try_mul(gso.minor(j + 1))?)?;
+    let mut scale = gso.minor(k).try_mul(gso.minor(k + 1))?;
+    let last = gso.minor(k + 1);
+    let mut sum = last.try_mul(last)?;
+    let mut target = None;
+
+    for i in (0..k).rev() {
+        let denominator = gso.minor(i).try_mul(gso.minor(i + 1))?;
+        let next_scale = lcm(scale, denominator)?;
+        if next_scale != scale {
+            sum = sum.try_mul(next_scale.try_div_exact(scale)?)?;
         }
-        let mut sum = T::ZERO;
-        for j in i..=k {
-            let numerator = if j == k {
-                gso.minor(k + 1)
-            } else {
-                gso.lambda(k, j)
-            };
-            let denominator = gso.minor(j).try_mul(gso.minor(j + 1))?;
-            let weight = scale.try_div_exact(denominator)?;
-            sum = sum.try_add(numerator.try_mul(numerator)?.try_mul(weight)?)?;
-        }
+        let weight = next_scale.try_div_exact(denominator)?;
+        let numerator = gso.lambda(k, i);
+        sum = sum.try_add(numerator.try_mul(numerator)?.try_mul(weight)?)?;
+        scale = next_scale;
+
         let left = narrow::<T>(delta.denominator)?
             .try_mul(gso.minor(i))?
             .try_mul(sum)?;
@@ -457,10 +456,10 @@ fn deep_insertion_point<T: Int>(
             .try_mul(gso.minor(i + 1))?
             .try_mul(scale)?;
         if left < right {
-            return Ok(Some(i));
+            target = Some(i);
         }
     }
-    Ok(None)
+    Ok(target)
 }
 
 #[cfg(test)]
