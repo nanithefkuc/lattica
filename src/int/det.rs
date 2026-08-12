@@ -42,6 +42,26 @@ pub fn det<T: Int>(a: &IntMatrix<T>) -> Result<T, RangeError> {
         return Ok(T::ONE);
     }
 
+    let mut upper_triangular = true;
+    let mut lower_triangular = true;
+    for row in 0..n {
+        for column in 0..n {
+            if row > column && !a.get(row, column).is_zero() {
+                upper_triangular = false;
+            }
+            if column > row && !a.get(row, column).is_zero() {
+                lower_triangular = false;
+            }
+        }
+    }
+    if upper_triangular || lower_triangular {
+        let mut determinant = T::ONE;
+        for diagonal in 0..n {
+            determinant = determinant.try_mul(a.get(diagonal, diagonal))?;
+        }
+        return Ok(determinant);
+    }
+
     let mut m: Vec<T> = a.as_slice().to_vec();
     let mut negated = false;
     let mut prev = T::ONE;
