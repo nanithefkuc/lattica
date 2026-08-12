@@ -75,6 +75,8 @@ impl ListPoint {
 #[derive(Debug, Clone)]
 pub struct Enumerator<T: Int> {
     gso: Gso<T>,
+    mu: Vec<f64>,
+    weights: Vec<f64>,
 }
 
 impl<T: Int> Enumerator<T> {
@@ -85,9 +87,18 @@ impl<T: Int> Enumerator<T> {
     /// As [`Gso::new`]: the Gram matrix must be positive definite and its exact
     /// factorization must fit the selected integer width.
     pub fn new(gram: &Gram<T>) -> Result<Self, ReduceError> {
-        Ok(Self {
-            gso: Gso::new(gram)?,
-        })
+        let gso = Gso::new(gram)?;
+        let n = gso.dim();
+        let mut mu = vec![0.0; n * n];
+        let mut weights = Vec::with_capacity(n);
+        for i in 0..n {
+            let (numerator, denominator) = gso.norm_sq(i);
+            weights.push(numerator.widen() as f64 / denominator.widen() as f64);
+            for j in 0..i {
+                mu[i * n + j] = gso.mu(i, j);
+            }
+        }
+        Ok(Self { gso, mu, weights })
     }
 
     /// Lattice dimension.
@@ -125,7 +136,8 @@ impl<T: Int> Enumerator<T> {
         scratch.reserve(self.dim());
 
         let mut search = Search {
-            gso: &self.gso,
+            mu: &self.mu,
+            weights: &self.weights,
             target,
             point: &mut scratch.point[..self.dim()],
             best: &mut scratch.best[..self.dim()],
@@ -168,7 +180,12 @@ impl<T: Int> Enumerator<T> {
             &mut scratch.coefficients[..self.dim()],
             &mut scratch.best[..self.dim()],
         )?;
-        let candidate_sq = triangular_distance(&self.gso, target, &scratch.best[..self.dim()])?;
+        let candidate_sq = triangular_distance(
+            &self.mu,
+            &self.weights,
+            target,
+            &scratch.best[..self.dim()],
+        )?;
         // The same positive terms are accumulated along a recursive path in
         // `nearest`; allow one small rounding envelope so the Babai point that
         // established the radius cannot fall a few ulps outside its own ball.
@@ -198,7 +215,8 @@ impl<T: Int> Enumerator<T> {
 
         let mut list = Vec::new();
         let mut walk = ListSearch {
-            gso: &self.gso,
+            mu: &self.mu,
+            weights: &self.weights,
             target,
             point: &mut scratch.point[..self.dim()],
             radius_sq,
@@ -243,8 +261,9 @@ fn validate(
     Ok(())
 }
 
-struct Search<'a, T: Int> {
-    gso: &'a Gso<T>,
+struct Search<'a> {
+    mu: &'a [f64],
+    weights: &'a [f64],
     target: &'a [f64],
     point: &'a mut [i64],
     best: &'a mut [i64],
@@ -254,7 +273,7 @@ struct Search<'a, T: Int> {
     found: bool,
 }
 
-impl<T: Int> Search<'_, T> {
+impl Search<'_> {
     fn nearest_level(&mut self, depth: usize, partial: f64) -> Result<(), DecodeError> {
         if depth == 0 {
             let replace = !self.found
@@ -270,8 +289,8 @@ impl<T: Int> Search<'_, T> {
         }
 
         let level = depth - 1;
-        let center = center(self.gso, self.target, self.point, level)?;
-        let weight = weight(self.gso, level);
+        let center = center(self.mu, self.target, self.point, level)?;
+        let weight = self.weights[level];
         let Some(children) = Children::new(center, self.radius_sq - partial, weight) else {
             return Ok(());
         };
@@ -294,8 +313,9 @@ impl<T: Int> Search<'_, T> {
     }
 }
 
-struct ListSearch<'a, T: Int> {
-    gso: &'a Gso<T>,
+struct ListSearch<'a> {
+    mu: &'a [f64],
+    weights: &'a [f64],
     target: &'a [f64],
     point: &'a mut [i64],
     radius_sq: f64,
@@ -304,7 +324,7 @@ struct ListSearch<'a, T: Int> {
     list: &'a mut Vec<ListPoint>,
 }
 
-impl<T: Int> ListSearch<'_, T> {
+impl ListSearch<'_> {
     fn level(&mut self, depth: usize, partial: f64) -> Result<(), DecodeError> {
         if depth == 0 {
             self.list.push(ListPoint {
@@ -315,8 +335,8 @@ impl<T: Int> ListSearch<'_, T> {
         }
 
         let level = depth - 1;
-        let center = center(self.gso, self.target, self.point, level)?;
-        let weight = weight(self.gso, level);
+        let center = center(self.mu, self.target, self.point, level)?;
+        let weight = self.weights[level];
         let Some(children) = Children::new(center, self.radius_sq - partial, weight) else {
             return Ok(());
         };
@@ -339,16 +359,17 @@ impl<T: Int> ListSearch<'_, T> {
     }
 }
 
-fn triangular_distance<T: Int>(
-    gso: &Gso<T>,
+fn triangular_distance(
+    mu: &[f64],
+    weights: &[f64],
     target: &[f64],
     point: &[i64],
 ) -> Result<f64, DecodeError> {
     let mut total = 0.0;
-    for level in (0..gso.dim()).rev() {
-        let value = center(gso, target, point, level)?;
+    for level in (0..target.len()).rev() {
+        let value = center(mu, target, point, level)?;
         let delta = value - point[level] as f64;
-        total += weight(gso, level) * delta * delta;
+        total += weights[level] * delta * delta;
     }
     if total.is_finite() {
         Ok(total)
@@ -357,26 +378,22 @@ fn triangular_distance<T: Int>(
     }
 }
 
-fn center<T: Int>(
-    gso: &Gso<T>,
+fn center(
+    mu: &[f64],
     target: &[f64],
     point: &[i64],
     level: usize,
 ) -> Result<f64, DecodeError> {
+    let n = target.len();
     let mut value = target[level];
-    for j in level + 1..gso.dim() {
-        value += (target[j] - point[j] as f64) * gso.mu(j, level);
+    for j in level + 1..n {
+        value += (target[j] - point[j] as f64) * mu[j * n + level];
     }
     if value.is_finite() {
         Ok(value)
     } else {
         Err(DecodeError::NonFinite { index: level })
     }
-}
-
-fn weight<T: Int>(gso: &Gso<T>, level: usize) -> f64 {
-    let (numerator, denominator) = gso.norm_sq(level);
-    numerator.widen() as f64 / denominator.widen() as f64
 }
 
 struct Children {
