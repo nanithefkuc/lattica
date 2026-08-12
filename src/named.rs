@@ -221,7 +221,7 @@ fn gram_from_scaled_generator<T: Int>(
 ) -> Result<Gram<T>, LatticeError> {
     let mut data = vec![T::ZERO; dimension * dimension];
     for i in 0..dimension {
-        for j in 0..dimension {
+        for j in 0..=i {
             let mut inner = 0i128;
             for k in 0..dimension {
                 let product = i128::from(numerators[i * dimension + k])
@@ -240,7 +240,9 @@ fn gram_from_scaled_generator<T: Int>(
             if inner % denominator_sq != 0 {
                 return Err(LatticeError::Degenerate);
             }
-            data[i * dimension + j] = T::narrow(inner / denominator_sq)?;
+            let value = T::narrow(inner / denominator_sq)?;
+            data[i * dimension + j] = value;
+            data[j * dimension + i] = value;
         }
     }
     Gram::from_rows(dimension, &data)

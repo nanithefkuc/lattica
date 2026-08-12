@@ -81,13 +81,24 @@ impl<T: Int> Basis<T> {
     /// [`LatticeError::Degenerate`] cannot arise here, since `B Bᵀ` is
     /// symmetric by construction.
     pub fn gram(&self) -> Result<Gram<T>, RangeError> {
-        let transposed = self.rows.transpose()?;
-        let product = self.rows.mul(&transposed)?;
-        // `B Bᵀ` is symmetric by construction, so the validating constructor
-        // cannot reject it.
-        Gram::new(product).map_err(|e| match e {
-            LatticeError::Range(r) => r,
-            _ => unreachable!("B Bᵀ is square and symmetric"),
+        let count = self.count();
+        let ambient = self.ambient_dim();
+        let mut product = IntMatrix::zeros(count, count)?;
+        for i in 0..count {
+            for j in 0..=i {
+                let mut inner = T::ZERO;
+                for k in 0..ambient {
+                    inner = inner.try_add(self.rows.get(i, k).try_mul(self.rows.get(j, k))?)?;
+                }
+                product.set(i, j, inner);
+                if i != j {
+                    product.set(j, i, inner);
+                }
+            }
+        }
+        Gram::new(product).map_err(|error| match error {
+            LatticeError::Range(range) => range,
+            _ => unreachable!("mirrored inner products are symmetric"),
         })
     }
 }
