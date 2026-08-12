@@ -396,37 +396,37 @@ fn center(
     }
 }
 
+#[derive(Debug, Clone)]
 struct Children {
     center: f64,
-    low: i64,
-    high: i64,
+    remaining: f64,
+    weight: f64,
     nearest: i64,
     step: i64,
     emitted_nearest: bool,
+    positive_done: bool,
+    negative_done: bool,
 }
 
 impl Children {
-    #[allow(clippy::cast_possible_truncation)]
     fn new(center: f64, remaining: f64, weight: f64) -> Option<Self> {
         if remaining < 0.0 || !remaining.is_finite() || weight <= 0.0 || !weight.is_finite() {
             return None;
         }
-        let bound = (remaining / weight).sqrt();
-        let low_f = (center - bound).ceil();
-        let high_f = (center + bound).floor();
-        if low_f > high_f || low_f < i64::MIN as f64 || high_f > i64::MAX as f64 {
+        let nearest = round_away(center);
+        let delta = center - nearest as f64;
+        if weight * delta * delta > remaining {
             return None;
         }
-        let low = low_f as i64;
-        let high = high_f as i64;
-        let nearest = round_away(center).clamp(low, high);
         Some(Self {
             center,
-            low,
-            high,
+            remaining,
+            weight,
             nearest,
             step: 1,
             emitted_nearest: false,
+            positive_done: false,
+            negative_done: false,
         })
     }
 }
@@ -439,8 +439,8 @@ impl Iterator for Children {
             self.emitted_nearest = true;
             return Some(self.nearest);
         }
-        loop {
-            let magnitude = (self.step + 1) / 2;
+        while !self.positive_done || !self.negative_done {
+            let magnitude = self.step.checked_add(1)? / 2;
             let positive_first = self.center >= self.nearest as f64;
             let positive = if self.step % 2 == 1 {
                 positive_first
@@ -448,26 +448,42 @@ impl Iterator for Children {
                 !positive_first
             };
             self.step = self.step.checked_add(1)?;
+            if (positive && self.positive_done) || (!positive && self.negative_done) {
+                continue;
+            }
             let candidate = if positive {
-                self.nearest.checked_add(magnitude)?
+                self.nearest.checked_add(magnitude)
             } else {
-                self.nearest.checked_sub(magnitude)?
+                self.nearest.checked_sub(magnitude)
             };
-            if candidate >= self.low && candidate <= self.high {
+            let Some(candidate) = candidate else {
+                if positive {
+                    self.positive_done = true;
+                } else {
+                    self.negative_done = true;
+                }
+                continue;
+            };
+            let delta = self.center - candidate as f64;
+            if self.weight * delta * delta <= self.remaining {
                 return Some(candidate);
             }
-            if self.nearest.saturating_sub(magnitude) < self.low
-                && self.nearest.saturating_add(magnitude) > self.high
-            {
-                return None;
+            if positive {
+                self.positive_done = true;
+            } else {
+                self.negative_done = true;
             }
         }
+        None
     }
 }
 
 #[allow(clippy::cast_possible_truncation)]
 fn round_away(value: f64) -> i64 {
     let truncated = value as i64;
+    if truncated == i64::MAX || truncated == i64::MIN {
+        return truncated;
+    }
     let fraction = value - truncated as f64;
     if fraction >= 0.5 {
         truncated + 1
