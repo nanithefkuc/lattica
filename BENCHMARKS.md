@@ -98,6 +98,15 @@ Warm CVP on the same comparison corpus improved from `1.512 µs`, `16.540 µs`,
 and `120.107 µs` to `0.635 µs`, `4.795 µs`, and `24.699 µs`, with unchanged
 target, point, and distance fingerprints.
 
+Strong reduced-basis preconditioning is the selected proof-tree optimization.
+On the named target `[0.31; n]`, `BW_16` visits 18 nodes and `Λ_24` visits
+19,202 nodes; the full 2,000-word radius sweep above reports no budget
+exhaustion. Stronger floating lower bounds and deterministic multi-start Babai
+candidates were therefore not added: neither has a measured exhaustion case to
+solve, and both would add per-node or per-word work to the default path.
+Single-word subtree scheduling remains deferred; independent received words are
+the deterministic parallel boundary.
+
 The exact-algebra corpus identified structural cases worth selecting. For a
 24-dimensional unit lower-bidiagonal matrix, triangular determinant selection
 measures `0.39 µs`; one fraction-free adjugate solve measures `0.235 ms`; and

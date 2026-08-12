@@ -185,6 +185,12 @@ fn benchmark_named() {
     let mut out24 = [0i64; 24];
     let ambient16 = [0.31; 16];
     let ambient24 = [0.31; 24];
+    let nodes16 = bw
+        .nearest(&ambient16, &mut out16, NODE_BUDGET, &mut scratch)
+        .unwrap();
+    let nodes24 = leech
+        .nearest(&ambient24, &mut out24, NODE_BUDGET, &mut scratch)
+        .unwrap();
     let total16 = measured(|| {
         black_box(bw.nearest(&ambient16, &mut out16, NODE_BUDGET, &mut scratch).unwrap());
     });
@@ -193,6 +199,8 @@ fn benchmark_named() {
     });
     println!("named_total_ns,16,bw16,{:.2},{}", total16.as_secs_f64() * 1e9, out16.iter().sum::<i64>());
     println!("named_total_ns,24,leech,{:.2},{}", total24.as_secs_f64() * 1e9, out24.iter().sum::<i64>());
+    println!("named_nodes,16,bw16,{nodes16},{}", out16.iter().sum::<i64>());
+    println!("named_nodes,24,leech,{nodes24},{}", out24.iter().sum::<i64>());
 }
 
 fn algebra_matrix(dimension: usize) -> IntMatrix<i128> {
