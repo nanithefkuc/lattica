@@ -15,6 +15,8 @@ use crate::gso::Gso;
 use crate::int::Int;
 use crate::quant::COORD_LIMIT;
 
+const ITERATIVE_DIMENSION: usize = 24;
+
 /// Reusable buffers for nearest-point enumeration.
 ///
 /// Keep one per decoding worker. After it has seen the largest dimension used
@@ -24,6 +26,9 @@ pub struct EnumerationScratch {
     point: Vec<i64>,
     best: Vec<i64>,
     coefficients: Vec<f64>,
+    centers: Vec<f64>,
+    partials: Vec<f64>,
+    children: Vec<Children>,
 }
 
 impl EnumerationScratch {
@@ -34,15 +39,31 @@ impl EnumerationScratch {
             point: Vec::new(),
             best: Vec::new(),
             coefficients: Vec::new(),
+            centers: Vec::new(),
+            partials: Vec::new(),
+            children: Vec::new(),
         }
     }
 
     /// Reserves space for `dimension` coordinates.
     pub fn reserve(&mut self, dimension: usize) {
+        self.reserve_core(dimension);
+        self.reserve_state(dimension);
+    }
+
+    fn reserve_core(&mut self, dimension: usize) {
         if self.point.len() < dimension {
             self.point.resize(dimension, 0);
             self.best.resize(dimension, 0);
             self.coefficients.resize(dimension, 0.0);
+        }
+    }
+
+    fn reserve_state(&mut self, dimension: usize) {
+        if self.centers.len() < dimension {
+            self.centers.resize(dimension, 0.0);
+            self.partials.resize(dimension, 0.0);
+            self.children.resize(dimension, Children::empty());
         }
     }
 }
@@ -133,7 +154,27 @@ impl<T: Int> Enumerator<T> {
         scratch: &mut EnumerationScratch,
     ) -> Result<u64, DecodeError> {
         validate(self.dim(), target, out.len(), radius_sq)?;
-        scratch.reserve(self.dim());
+        scratch.reserve_core(self.dim());
+        if self.dim() < ITERATIVE_DIMENSION {
+            let mut search = RecursiveSearch {
+                mu: &self.mu,
+                weights: &self.weights,
+                target,
+                point: &mut scratch.point[..self.dim()],
+                best: &mut scratch.best[..self.dim()],
+                radius_sq,
+                node_budget,
+                nodes: 0,
+                found: false,
+            };
+            search.run(self.dim(), 0.0)?;
+            if !search.found {
+                return Err(DecodeError::OutsideRadius { radius_sq });
+            }
+            out.copy_from_slice(search.best);
+            return Ok(search.nodes);
+        }
+        scratch.reserve_state(self.dim());
 
         let mut search = Search {
             mu: &self.mu,
@@ -141,12 +182,15 @@ impl<T: Int> Enumerator<T> {
             target,
             point: &mut scratch.point[..self.dim()],
             best: &mut scratch.best[..self.dim()],
+            centers: &mut scratch.centers[..self.dim()],
+            partials: &mut scratch.partials[..self.dim()],
+            children: &mut scratch.children[..self.dim()],
             radius_sq,
             node_budget,
             nodes: 0,
             found: false,
         };
-        search.nearest_level(self.dim(), 0.0)?;
+        search.run()?;
         if !search.found {
             return Err(DecodeError::OutsideRadius { radius_sq });
         }
@@ -173,7 +217,7 @@ impl<T: Int> Enumerator<T> {
         scratch: &mut EnumerationScratch,
     ) -> Result<u64, DecodeError> {
         validate(self.dim(), target, out.len(), 0.0)?;
-        scratch.reserve(self.dim());
+        scratch.reserve_core(self.dim());
         scratch.coefficients[..self.dim()].copy_from_slice(target);
         crate::quant::babai::nearest_plane(
             &self.gso,
@@ -211,7 +255,28 @@ impl<T: Int> Enumerator<T> {
         scratch: &mut EnumerationScratch,
     ) -> Result<Vec<ListPoint>, DecodeError> {
         validate(self.dim(), target, self.dim(), radius_sq)?;
-        scratch.reserve(self.dim());
+        scratch.reserve_core(self.dim());
+        if self.dim() < ITERATIVE_DIMENSION {
+            let mut list = Vec::new();
+            let mut walk = RecursiveListSearch {
+                mu: &self.mu,
+                weights: &self.weights,
+                target,
+                point: &mut scratch.point[..self.dim()],
+                radius_sq,
+                node_budget,
+                nodes: 0,
+                list: &mut list,
+            };
+            walk.run(self.dim(), 0.0)?;
+            list.sort_by(|a, b| {
+                a.distance_sq
+                    .total_cmp(&b.distance_sq)
+                    .then_with(|| a.point.cmp(&b.point))
+            });
+            return Ok(list);
+        }
+        scratch.reserve_state(self.dim());
 
         let mut list = Vec::new();
         let mut walk = ListSearch {
@@ -219,12 +284,15 @@ impl<T: Int> Enumerator<T> {
             weights: &self.weights,
             target,
             point: &mut scratch.point[..self.dim()],
+            centers: &mut scratch.centers[..self.dim()],
+            partials: &mut scratch.partials[..self.dim()],
+            children: &mut scratch.children[..self.dim()],
             radius_sq,
             node_budget,
             nodes: 0,
             list: &mut list,
         };
-        walk.level(self.dim(), 0.0)?;
+        walk.run()?;
         list.sort_by(|a, b| {
             a.distance_sq
                 .total_cmp(&b.distance_sq)
@@ -261,7 +329,7 @@ fn validate(
     Ok(())
 }
 
-struct Search<'a> {
+struct RecursiveSearch<'a> {
     mu: &'a [f64],
     weights: &'a [f64],
     target: &'a [f64],
@@ -273,28 +341,32 @@ struct Search<'a> {
     found: bool,
 }
 
-impl Search<'_> {
-    fn nearest_level(&mut self, depth: usize, partial: f64) -> Result<(), DecodeError> {
+impl RecursiveSearch<'_> {
+    fn consider(&mut self, distance_sq: f64) {
+        let replace = !self.found
+            || distance_sq < self.radius_sq
+            || (distance_sq.total_cmp(&self.radius_sq) == Ordering::Equal
+                && self.point < self.best);
+        if replace {
+            self.best.copy_from_slice(self.point);
+            self.radius_sq = distance_sq;
+            self.found = true;
+        }
+    }
+
+    fn run(&mut self, depth: usize, partial: f64) -> Result<(), DecodeError> {
         if depth == 0 {
-            let replace = !self.found
-                || partial < self.radius_sq
-                || (partial.total_cmp(&self.radius_sq) == Ordering::Equal
-                    && self.point < self.best);
-            if replace {
-                self.best.copy_from_slice(self.point);
-                self.radius_sq = partial;
-                self.found = true;
-            }
+            self.consider(partial);
             return Ok(());
         }
-
         let level = depth - 1;
-        let center = center(self.mu, self.target, self.point, level)?;
-        let weight = self.weights[level];
-        let Some(children) = Children::new(center, self.radius_sq - partial, weight) else {
+        let value = center(self.mu, self.target, self.point, level)?;
+        let Some(children) =
+            Children::new(value, self.radius_sq - partial, self.weights[level])
+        else {
             return Ok(());
         };
-        for value in children {
+        for child in children {
             if self.nodes >= self.node_budget {
                 return Err(DecodeError::BudgetExhausted {
                     nodes: self.nodes,
@@ -302,18 +374,18 @@ impl Search<'_> {
                 });
             }
             self.nodes += 1;
-            self.point[level] = value;
-            let delta = center - value as f64;
-            let next = partial + weight * delta * delta;
+            self.point[level] = child;
+            let delta = value - child as f64;
+            let next = partial + self.weights[level] * delta * delta;
             if next <= self.radius_sq {
-                self.nearest_level(level, next)?;
+                self.run(level, next)?;
             }
         }
         Ok(())
     }
 }
 
-struct ListSearch<'a> {
+struct RecursiveListSearch<'a> {
     mu: &'a [f64],
     weights: &'a [f64],
     target: &'a [f64],
@@ -324,8 +396,8 @@ struct ListSearch<'a> {
     list: &'a mut Vec<ListPoint>,
 }
 
-impl ListSearch<'_> {
-    fn level(&mut self, depth: usize, partial: f64) -> Result<(), DecodeError> {
+impl RecursiveListSearch<'_> {
+    fn run(&mut self, depth: usize, partial: f64) -> Result<(), DecodeError> {
         if depth == 0 {
             self.list.push(ListPoint {
                 point: self.point.to_vec(),
@@ -333,14 +405,14 @@ impl ListSearch<'_> {
             });
             return Ok(());
         }
-
         let level = depth - 1;
-        let center = center(self.mu, self.target, self.point, level)?;
-        let weight = self.weights[level];
-        let Some(children) = Children::new(center, self.radius_sq - partial, weight) else {
+        let value = center(self.mu, self.target, self.point, level)?;
+        let Some(children) =
+            Children::new(value, self.radius_sq - partial, self.weights[level])
+        else {
             return Ok(());
         };
-        for value in children {
+        for child in children {
             if self.nodes >= self.node_budget {
                 return Err(DecodeError::BudgetExhausted {
                     nodes: self.nodes,
@@ -348,15 +420,202 @@ impl ListSearch<'_> {
                 });
             }
             self.nodes += 1;
-            self.point[level] = value;
-            let delta = center - value as f64;
-            let next = partial + weight * delta * delta;
+            self.point[level] = child;
+            let delta = value - child as f64;
+            let next = partial + self.weights[level] * delta * delta;
             if next <= self.radius_sq {
-                self.level(level, next)?;
+                self.run(level, next)?;
             }
         }
         Ok(())
     }
+}
+
+struct Search<'a> {
+    mu: &'a [f64],
+    weights: &'a [f64],
+    target: &'a [f64],
+    point: &'a mut [i64],
+    best: &'a mut [i64],
+    centers: &'a mut [f64],
+    partials: &'a mut [f64],
+    children: &'a mut [Children],
+    radius_sq: f64,
+    node_budget: u64,
+    nodes: u64,
+    found: bool,
+}
+
+impl Search<'_> {
+    fn enter(&mut self, level: usize, partial: f64) {
+        let value = self.centers[level];
+        self.partials[level] = partial;
+        self.children[level] =
+            Children::new(value, self.radius_sq - partial, self.weights[level])
+                .unwrap_or_else(Children::empty);
+    }
+
+    fn consider(&mut self, distance_sq: f64) {
+        let replace = !self.found
+            || distance_sq < self.radius_sq
+            || (distance_sq.total_cmp(&self.radius_sq) == Ordering::Equal
+                && self.point < self.best);
+        if replace {
+            self.best.copy_from_slice(self.point);
+            self.radius_sq = distance_sq;
+            self.found = true;
+        }
+    }
+
+
+    fn run(&mut self) -> Result<(), DecodeError> {
+        let n = self.target.len();
+        if n == 0 {
+            self.consider(0.0);
+            return Ok(());
+        }
+        initialize_centers(self.mu, self.target, self.point, self.centers)?;
+        let mut level = n - 1;
+        self.enter(level, 0.0);
+        loop {
+            let Some(value) = self.children[level].next() else {
+                if level == n - 1 {
+                    return Ok(());
+                }
+                level += 1;
+                continue;
+            };
+            if self.nodes >= self.node_budget {
+                return Err(DecodeError::BudgetExhausted {
+                    nodes: self.nodes,
+                    radius_sq: self.radius_sq,
+                });
+            }
+            self.nodes += 1;
+            update_centers(self.mu, self.point, self.centers, level, value);
+            let delta = self.centers[level] - value as f64;
+            let next = self.partials[level] + self.weights[level] * delta * delta;
+            if next > self.radius_sq {
+                continue;
+            }
+            if level == 0 {
+                self.consider(next);
+            } else {
+                level -= 1;
+                self.enter(level, next);
+            }
+        }
+    }
+}
+
+struct ListSearch<'a> {
+    mu: &'a [f64],
+    weights: &'a [f64],
+    target: &'a [f64],
+    point: &'a mut [i64],
+    centers: &'a mut [f64],
+    partials: &'a mut [f64],
+    children: &'a mut [Children],
+    radius_sq: f64,
+    node_budget: u64,
+    nodes: u64,
+    list: &'a mut Vec<ListPoint>,
+}
+
+impl ListSearch<'_> {
+    fn enter(&mut self, level: usize, partial: f64) {
+        let value = self.centers[level];
+        self.partials[level] = partial;
+        self.children[level] =
+            Children::new(value, self.radius_sq - partial, self.weights[level])
+                .unwrap_or_else(Children::empty);
+    }
+
+
+    fn run(&mut self) -> Result<(), DecodeError> {
+        let n = self.target.len();
+        if n == 0 {
+            self.list.push(ListPoint {
+                point: Vec::new(),
+                distance_sq: 0.0,
+            });
+            return Ok(());
+        }
+        initialize_centers(self.mu, self.target, self.point, self.centers)?;
+        let mut level = n - 1;
+        self.enter(level, 0.0);
+        loop {
+            let Some(value) = self.children[level].next() else {
+                if level == n - 1 {
+                    return Ok(());
+                }
+                level += 1;
+                continue;
+            };
+            if self.nodes >= self.node_budget {
+                return Err(DecodeError::BudgetExhausted {
+                    nodes: self.nodes,
+                    radius_sq: self.radius_sq,
+                });
+            }
+            self.nodes += 1;
+            update_centers(self.mu, self.point, self.centers, level, value);
+            let delta = self.centers[level] - value as f64;
+            let next = self.partials[level] + self.weights[level] * delta * delta;
+            if next > self.radius_sq {
+                continue;
+            }
+            if level == 0 {
+                self.list.push(ListPoint {
+                    point: self.point.to_vec(),
+                    distance_sq: if next == 0.0 { 0.0 } else { next },
+                });
+            } else {
+                level -= 1;
+                self.enter(level, next);
+            }
+        }
+    }
+}
+
+fn initialize_centers(
+    mu: &[f64],
+    target: &[f64],
+    point: &mut [i64],
+    centers: &mut [f64],
+) -> Result<(), DecodeError> {
+    point.fill(0);
+    centers.copy_from_slice(target);
+    for higher in 1..target.len() {
+        let residual = target[higher];
+        let row = &mu[higher * target.len()..(higher + 1) * target.len()];
+        for lower in 0..higher {
+            centers[lower] += residual * row[lower];
+        }
+    }
+    if let Some(index) = centers.iter().position(|value| !value.is_finite()) {
+        return Err(DecodeError::NonFinite { index });
+    }
+    Ok(())
+}
+
+fn update_centers(
+    mu: &[f64],
+    point: &mut [i64],
+    centers: &mut [f64],
+    level: usize,
+    value: i64,
+) {
+    let old = point[level];
+    if old == value {
+        return;
+    }
+    let n = point.len();
+    let change = old as f64 - value as f64;
+    for lower in 0..level {
+        centers[lower] += change * mu[level * n + lower];
+    }
+    point[level] = value;
 }
 
 fn triangular_distance(
@@ -409,6 +668,19 @@ struct Children {
 }
 
 impl Children {
+    const fn empty() -> Self {
+        Self {
+            center: 0.0,
+            remaining: 0.0,
+            weight: 1.0,
+            nearest: 0,
+            step: 1,
+            emitted_nearest: true,
+            positive_done: true,
+            negative_done: true,
+        }
+    }
+
     fn new(center: f64, remaining: f64, weight: f64) -> Option<Self> {
         if remaining < 0.0 || !remaining.is_finite() || weight <= 0.0 || !weight.is_finite() {
             return None;
