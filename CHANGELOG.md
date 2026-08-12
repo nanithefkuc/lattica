@@ -68,6 +68,28 @@ not a field library, and not a lattice-cryptography library.
   channel that reproduces the published `0.6539 dB` shaping gain of the `E_8`
   Voronoi region, used as the release gate.
 
+### Changed
+
+- Exact LLL and deep-insertion reduction now update the symmetric Gram matrix
+  and fraction-free GSO state transactionally after size reductions and
+  adjacent swaps. The 16-basis comparison corpus improved by 11.5x, 48.9x, and
+  112.8x at dimensions 8, 16, and 24 while retaining exact certificates,
+  checked overflow, and one factorization.
+- General CVP enumeration caches real triangular coefficients, uses
+  square-root-free zig-zag stepping and reusable iterative state at dimension
+  24 and above, and accepts independently validated initial candidates.
+  `PreparedEnumerator` adds strongly reduced-basis search with exact coordinate
+  mapping back to the caller's basis; named Barnes–Wall and Leech decoders use
+  that prepared form.
+- Positive-definiteness uses one fraction-free factorization, adjugates share
+  one fraction-free solve with a cofactor fallback for the accepted overflow
+  domain, triangular determinants use their diagonal product, and symmetric
+  Gram construction computes one triangle.
+- The optimization benchmark reports operation counts, proof-tree nodes,
+  nanoseconds per node, exact-algebra costs, batch geometry, allocation counts,
+  and deterministic correctness fingerprints. Build-option and rejected
+  crossover measurements are recorded in `BENCHMARKS.md`.
+
 ### Notes
 
 - Edition 2024 and MSRV 1.89. Runtime dependencies are limited to optional
