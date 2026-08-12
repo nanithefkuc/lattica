@@ -145,6 +145,23 @@ consumer or repeatable gain that would justify a second semantic
 implementation. Integer SIMD is specifically incompatible with the existing
 per-operation overflow boundary.
 
+Repeated local-workload optimization also stopped at the evidence boundary.
+List and relevant-vector calls allocate output-proportionally, exact census
+allocates cold factorization state, and Construction-A membership currently
+allocates one residue buffer per call. No crate consumer repeats these setup or
+oracle operations in a hot path, so prepared public APIs and extra scratch
+types were not added speculatively. The selected scalar improvements are the
+measured reduction/enumeration changes, total unstable list ordering, shared
+exact algebra, and triangular Gram work above.
+
+Consumer build options were measured separately with the comparison harness.
+`-C target-cpu=native` produced LLL medians of `6.792/69.315/247.868 µs` and
+warm CVP medians of `0.631/4.880/26.036 µs` at dimensions 8/16/24. Fat LTO with
+one codegen unit produced `6.687/70.948/247.537 µs` and
+`0.582/4.658/25.085 µs`. Neither option improves every core geometry relative
+to the ordinary release results, so these remain final-binary choices rather
+than library profile settings.
+
 ## fplll comparison
 
 [`fplll`](https://github.com/fplll/fplll) overlaps with this crate at LLL
