@@ -72,6 +72,44 @@ fn nearest_agrees_with_brute_force_through_dimension_six() {
     }
 }
 
+#[cfg(feature = "internals")]
+#[test]
+fn seeded_radius_is_validated_before_proof_search() {
+    let gram = zn::<i64>(3).unwrap();
+    let enumerator = Enumerator::new(&gram).unwrap();
+    let target = [0.2, -0.3, 0.1];
+    let candidate = [0, 0, 0];
+    let mut scratch = EnumerationScratch::new();
+    let mut out = [91; 3];
+
+    assert_eq!(
+        enumerator
+            .nearest_seeded(
+                &target,
+                &mut out,
+                &candidate,
+                0.0,
+                DECODE_BUDGET,
+                &mut scratch,
+            )
+            .unwrap_err(),
+        DecodeError::InvalidRadius { radius_sq: 0.0 }
+    );
+    assert_eq!(out, [91; 3]);
+
+    enumerator
+        .nearest_seeded(
+            &target,
+            &mut out,
+            &candidate,
+            1.0,
+            DECODE_BUDGET,
+            &mut scratch,
+        )
+        .unwrap();
+    assert_eq!(out, candidate);
+}
+
 #[test]
 fn list_mode_matches_brute_force_and_pins_order() {
     let gram = zn::<i64>(2).unwrap();
