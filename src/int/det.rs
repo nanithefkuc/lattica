@@ -134,9 +134,7 @@ pub fn adjugate<T: Int>(a: &IntMatrix<T>) -> Result<IntMatrix<T>, RangeError> {
     }
 }
 
-fn fraction_free_adjugate<T: Int>(
-    a: &IntMatrix<T>,
-) -> Result<Option<IntMatrix<T>>, RangeError> {
+fn fraction_free_adjugate<T: Int>(a: &IntMatrix<T>) -> Result<Option<IntMatrix<T>>, RangeError> {
     let n = a.rows();
     let mut left = a.clone();
     let mut right = IntMatrix::<T>::identity(n)?;

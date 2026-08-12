@@ -62,11 +62,11 @@ use core::num::NonZeroU32;
 use lattica::construct::{CodeMembership, ConstructionA};
 use lattica::error::DecodeError;
 use lattica::named::d_n;
-use lattica::quant::{
-    An, Dn, DnPlus, EnumerationScratch, Enumerator, PreparedEnumerationScratch,
-    PreparedEnumerator, Quantizer, Scratch, Zn, e8, nearest_batch,
-};
 use lattica::quant::relevant::relevant_vectors;
+use lattica::quant::{
+    An, Dn, DnPlus, EnumerationScratch, Enumerator, PreparedEnumerationScratch, PreparedEnumerator,
+    Quantizer, Scratch, Zn, e8, nearest_batch,
+};
 use lattica::reduce::Delta;
 use lattica::shortvec::census;
 
@@ -219,10 +219,15 @@ fn repeated_materialized_workload_allocations_are_counted() {
     let target = [0.17, -0.31, 0.43, -0.59];
 
     let list_allocations = allocations_during(|| {
-        let points = enumerator.list(&target, 4.0, 1 << 20, &mut scratch).unwrap();
+        let points = enumerator
+            .list(&target, 4.0, 1 << 20, &mut scratch)
+            .unwrap();
         assert!(!points.is_empty());
     });
-    assert!(list_allocations > 0, "list output was not allocation-proportional");
+    assert!(
+        list_allocations > 0,
+        "list output was not allocation-proportional"
+    );
 
     let relevant_allocations = allocations_during(|| {
         assert!(!relevant_vectors(&gram, 1 << 20).unwrap().is_empty());

@@ -16,8 +16,8 @@ use lattica::quant::{
     EnumerationScratch, Enumerator, PreparedEnumerationScratch, PreparedEnumerator, Quantizer,
     Scratch,
 };
-use lattica::shortvec::DEFAULT_NODE_BUDGET;
 use lattica::reduce::Delta;
+use lattica::shortvec::DEFAULT_NODE_BUDGET;
 
 const DECODE_BUDGET: u64 = 1 << 20;
 
