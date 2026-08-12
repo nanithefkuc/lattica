@@ -135,6 +135,16 @@ release assembly was inspected after `cargo rustc --release --features
 internals --lib -- --emit=asm`; the hot enumeration loop remains scalar and
 contains no square-root call after child construction was rewritten.
 
+The final SIMD decision remains one 16-output SoA transform at 64 vectors or
+more. A fresh pinned run measured scalar/dispatched medians of `525/528 ns`,
+`1.724/1.461 µs`, and `8.740/6.716 µs` at 8, 64, and 257 vectors. The 24- and
+31-output prototypes remain unselected because repeated runs did not establish
+a stable crossover. Closed-form quantizer batches, metric kernels, and checked
+integer algebra also remain scalar: the corpus identifies no layout-preserving
+consumer or repeatable gain that would justify a second semantic
+implementation. Integer SIMD is specifically incompatible with the existing
+per-operation overflow boundary.
+
 ## fplll comparison
 
 [`fplll`](https://github.com/fplll/fplll) overlaps with this crate at LLL
