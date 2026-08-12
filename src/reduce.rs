@@ -393,7 +393,7 @@ fn reduce_with<T: Int>(
                 continue;
             }
             state.subtract(k, j, quotient)?;
-            state.refactor_gso(&mut gso)?;
+            gso.size_reduce(k, j, quotient)?;
         }
 
         if deep {
