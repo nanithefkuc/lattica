@@ -87,8 +87,7 @@ impl<const N: usize> AmbientCore<N> {
                 dual[k * N + j] = numerator as f64 / (determinant as f64 * scale);
             }
         }
-        let enumerator =
-            PreparedEnumerator::new(gram, Delta::STRONG).map_err(reduce_to_lattice)?;
+        let enumerator = PreparedEnumerator::new(gram, Delta::STRONG).map_err(reduce_to_lattice)?;
         Ok(Self {
             enumerator,
             dual,
@@ -191,7 +190,7 @@ impl BarnesWall16 {
     ///
     /// # Errors
     ///
-    /// As [`Enumerator::nearest_ml`].
+    /// As [`PreparedEnumerator::nearest_ml`].
     pub fn nearest_coefficients(
         &self,
         target: &[f64],
@@ -255,7 +254,7 @@ impl Leech24 {
     ///
     /// # Errors
     ///
-    /// As [`Enumerator::nearest_ml`].
+    /// As [`PreparedEnumerator::nearest_ml`].
     pub fn nearest_coefficients(
         &self,
         target: &[f64],

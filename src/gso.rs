@@ -393,12 +393,12 @@ mod tests {
         let mut basis = Vec::with_capacity(n * n);
         for row in 0..n {
             for column in 0..n {
-                let value = if row == column {
-                    3
-                } else if column < row {
-                    i64::try_from((row * 5 + column * 3) % 5).unwrap() - 2
-                } else {
-                    0
+                let value = match row.cmp(&column) {
+                    core::cmp::Ordering::Equal => 3,
+                    core::cmp::Ordering::Greater => {
+                        i64::try_from((row * 5 + column * 3) % 5).unwrap() - 2
+                    }
+                    core::cmp::Ordering::Less => 0,
                 };
                 basis.push(value);
             }
@@ -416,10 +416,8 @@ mod tests {
                 matrix.row_sub_mul(target, source, factor).unwrap();
                 matrix.col_sub_mul(target, source, factor).unwrap();
                 updated.size_reduce(target, source, factor).unwrap();
-                let fresh_gram = Gram::new(
-                    IntMatrix::from_rows(n, n, matrix.as_slice()).unwrap(),
-                )
-                .unwrap();
+                let fresh_gram =
+                    Gram::new(IntMatrix::from_rows(n, n, matrix.as_slice()).unwrap()).unwrap();
                 assert_eq!(updated, Gso::new(&fresh_gram).unwrap());
             }
         }
