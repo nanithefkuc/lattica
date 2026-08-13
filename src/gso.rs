@@ -115,11 +115,13 @@ impl<T: Int> Gso<T> {
             }
             for i in k + 1..n {
                 let leading = self.upper[i * n + k];
-                for j in k + 1..n {
+                for j in i..n {
                     let cross = self.upper[i * n + j]
                         .try_mul(pivot)?
                         .try_sub(leading.try_mul(self.upper[k * n + j])?)?;
-                    self.upper[i * n + j] = cross.try_div_exact(previous)?;
+                    let value = cross.try_div_exact(previous)?;
+                    self.upper[i * n + j] = value;
+                    self.upper[j * n + i] = value;
                 }
                 self.upper[i * n + k] = T::ZERO;
             }

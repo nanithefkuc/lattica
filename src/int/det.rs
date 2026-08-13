@@ -44,13 +44,16 @@ pub fn det<T: Int>(a: &IntMatrix<T>) -> Result<T, RangeError> {
 
     let mut upper_triangular = true;
     let mut lower_triangular = true;
-    for row in 0..n {
-        for column in 0..n {
-            if row > column && !a.get(row, column).is_zero() {
+    'triangularity: for row in 1..n {
+        for column in 0..row {
+            if !a.get(row, column).is_zero() {
                 upper_triangular = false;
             }
-            if column > row && !a.get(row, column).is_zero() {
+            if !a.get(column, row).is_zero() {
                 lower_triangular = false;
+            }
+            if !upper_triangular && !lower_triangular {
+                break 'triangularity;
             }
         }
     }
@@ -82,6 +85,9 @@ pub fn det<T: Int>(a: &IntMatrix<T>) -> Result<T, RangeError> {
         let pivot = m[k * n + k];
         for i in k + 1..n {
             let leading = m[i * n + k];
+            if leading.is_zero() && pivot == prev {
+                continue;
+            }
             for j in k + 1..n {
                 let cross = m[i * n + j]
                     .try_mul(pivot)?
