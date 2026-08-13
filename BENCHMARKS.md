@@ -162,6 +162,93 @@ one codegen unit produced `6.687/70.948/247.537 µs` and
 to the ordinary release results, so these remain final-binary choices rather
 than library profile settings.
 
+## Further exact-arithmetic pass
+
+Command:
+
+```sh
+taskset -c 2 cargo bench --bench optimization --features internals
+taskset -c 2 cargo bench --bench fplll_compare
+```
+
+Measured 2026-08-13 on the same machine and toolchain. A `perf record` run
+identified initial fraction-free GSO construction and determinant certificates
+as the largest remaining avoidable costs. Symmetric Bareiss factorization now
+computes each trailing entry once and mirrors it; determinant detection scans
+each off-diagonal pair once and skips identity Bareiss row updates.
+
+| Operation | Dimension | Before | After | Reduction |
+| --- | ---: | ---: | ---: | ---: |
+| comparison LLL | 8 | 7.561 µs | 6.608 µs | 12.6% |
+| comparison LLL | 16 | 68.165 µs | 64.895 µs | 4.8% |
+| comparison LLL | 24 | 249.814 µs | 238.518 µs | 4.5% |
+| CVP preparation | 8 | 1.259 µs | 1.098 µs | 12.8% |
+| CVP preparation | 16 | 9.873 µs | 6.558 µs | 33.6% |
+| CVP preparation | 24 | 31.329 µs | 21.134 µs | 32.6% |
+| positive-definiteness | 8 | 1.151 µs | 0.784 µs | 31.9% |
+| positive-definiteness | 16 | 9.556 µs | 5.285 µs | 44.7% |
+| positive-definiteness | 24 | 32.582 µs | 17.839 µs | 45.2% |
+| triangular determinant | 8 | 67 ns | 59 ns | 11.9% |
+| triangular determinant | 16 | 183 ns | 147 ns | 19.7% |
+| triangular determinant | 24 | 427 ns | 279 ns | 34.7% |
+
+All comparison fingerprints and reduction operation counts were unchanged.
+The post-change profile is dominated by checked `i128` division, LLL updates,
+and determinant certificates. Those are semantic work under the crate's exact
+fixed-width contract; replacing them with approximate scheduling or unchecked
+arithmetic would change the contract rather than optimize it.
+
+## Comparison target selection
+
+fplll remains the useful general-CVP target: its in-process public API exposes
+both fast and claimed-proved closest-vector modes, and no conversion or process
+startup appears in the timing. Its LLL boundary is less direct because fplll
+accepts an ambient basis while `lattica` owns a Gram matrix.
+
+[FLINT](https://flintlib.org/doc/fmpz_lll.html) is the more appropriate LLL
+target. Its public `fmpz_lll` API accepts a Gram matrix and returns the
+unimodular transform, matching `lattica::reduce::lll` at the representation and
+output boundaries. `benches/flint_compare.cpp` duplicates the existing
+deterministic corpus, checks `U G U^T == G_reduced`, and requires FLINT's
+reducedness certificate before timing. FLINT remains an external benchmark,
+not a crate dependency.
+
+The complete local FLINT 3.6.0 measurement is:
+
+```sh
+c++ -O3 -march=native -DNDEBUG -std=c++17 \
+  benches/flint_compare.cpp -lflint -lmpfr -lgmp \
+  -o target/flint-compare
+taskset -c 2 target/flint-compare
+```
+
+Both libraries include their public result allocation, input copy, and
+unimodular transform. FLINT uses arbitrary-precision integers and its adaptive
+public LLL driver; `lattica` uses checked `i128`. This is a contract-aligned
+comparison, not an identical-arithmetic claim.
+
+| Dimension | `lattica` median | FLINT median | `lattica` speedup |
+| ---: | ---: | ---: | ---: |
+| 8 | 6.608 µs | 78.726 µs | 11.9x |
+| 16 | 64.895 µs | 378.025 µs | 5.83x |
+| 24 | 238.518 µs | 1.128 ms | 4.73x |
+
+FLINT is also the right future target for determinant, adjugate/inverse, HNF,
+and SNF throughput because those operations have direct `fmpz_mat` APIs. They
+should use a separate magnitude-stratified corpus: the present unit
+lower-bidiagonal matrix mostly measures structural fast paths.
+
+The specialized decoders do not yet have one contract-equivalent library
+target. The published
+[`leech-decoding`](https://github.com/avanpo/leech-decoding) implementation is
+a worthwhile algorithmic ceiling for `Λ_24`, but it accepts bounded integer
+representatives and targets a constant-time cryptographic contract rather than
+arbitrary real maximum-likelihood queries. BLAS is likewise only a throughput
+ceiling for the real transform because it may reassociate or use FMA, while
+`lattica` promises scalar accumulation order and bit-identical dispatched
+results. Neither should receive a headline ratio until an adapter verifies
+identical input, output, distance, and tie behavior.
+
 ## fplll comparison
 
 [`fplll`](https://github.com/fplll/fplll) overlaps with this crate at LLL
@@ -212,16 +299,17 @@ work. `lattica` starts with its canonical Gram representation. fplll starts with
 its canonical ambient basis representation and copies it because its API
 reduces in place. Input construction is outside both timers.
 
-| Dimension | `lattica` median | fplll median | fplll speedup |
+| Dimension | `lattica` median | fplll median | Faster library |
 | ---: | ---: | ---: | ---: |
-| 8 | 86.622 µs | 14.070 µs | 6.16x |
-| 16 | 3.3341 ms | 46.553 µs | 71.6x |
-| 24 | 28.167 ms | 162.673 µs | 173x |
+| 8 | 6.608 µs | 20.829 µs | `lattica` 3.15x |
+| 16 | 64.895 µs | 46.171 µs | fplll 1.41x |
+| 24 | 238.518 µs | 164.156 µs | fplll 1.45x |
 
-This is the expected loss from `lattica`'s current reduction design:
-fraction-free GSO is recomputed after every basis change, while fplll is a
-mature, update-oriented reduction library. Reduction remains an offline setup
-operation here, but this is the clearest measured optimization gap.
+Incremental exact GSO updates removed the earlier orders-of-magnitude gap.
+fplll remains faster at dimensions 16 and 24, while `lattica` is faster at
+dimension 8. The remaining comparison is deliberately not called
+contract-equivalent: fplll reduces an ambient basis without returning the
+transform, while `lattica` reduces a Gram matrix and always returns it.
 
 ### CVP
 
@@ -241,15 +329,15 @@ fingerprints match `lattica` on this corpus. The documented guaranteed
 
 | Dimension | `lattica` cold | `lattica` warm | fplll `FAST` | fplll `PROVED` |
 | ---: | ---: | ---: | ---: | ---: |
-| 8 | 2.498 µs | 1.512 µs | 21.065 µs | 49.516 µs |
-| 16 | 25.184 µs | 16.540 µs | 57.760 µs | 102.130 µs |
-| 24 | 149.392 µs | 120.107 µs | 128.278 µs | 202.037 µs |
+| 8 | 1.561 µs | 0.629 µs | 21.425 µs | 49.089 µs |
+| 16 | 11.499 µs | 4.952 µs | 57.355 µs | 103.699 µs |
+| 24 | 44.192 µs | 25.381 µs | 131.268 µs | 210.412 µs |
 
-Against fplll `FAST`, warm `lattica` is 13.9x faster at dimension 8, 3.49x at
-16, and 1.07x at 24. Cold `lattica` is 8.43x and 2.29x faster at 8 and 16;
-fplll is 1.16x faster at 24. These are throughput comparisons, not equivalent
-guarantees: `lattica` retains exact pruning plus an explicit node budget, while
-fplll `FAST` does not promise the closest point.
+Against fplll `FAST`, warm `lattica` is 34.1x, 11.6x, and 5.17x faster at
+dimensions 8, 16, and 24. Cold `lattica` is 13.7x, 4.99x, and 2.97x faster.
+These are throughput comparisons, not equivalent guarantees: `lattica`
+retains exact pruning plus an explicit node budget, while fplll `FAST` does not
+promise the closest point.
 
 The output fingerprints expose a correctness problem in fplll 5.5.0
 `CVPM_PROVED`. `FAST` and `lattica` reported identical target, point, and

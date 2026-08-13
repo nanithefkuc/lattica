@@ -87,7 +87,7 @@ cargo test
 ```
 
 Kernel crossovers, high-dimensional decoder measurements, and the reproducible
-fplll comparison are recorded in [`BENCHMARKS.md`](BENCHMARKS.md).
+fplll and FLINT comparisons are recorded in [`BENCHMARKS.md`](BENCHMARKS.md).
 
 `lattica` is **not** `no_std`: real-basis reduction needs `sqrt` and friends,
 and a `libm` dependency would cost more than `std` does.

@@ -59,9 +59,11 @@ not a field library, and not a lattice-cryptography library.
   scalar accumulation order across AVX2 lanes and ragged tails. Stack-wide
   backend selection comes from `simdispatch`; unmeasured and losing shapes stay
   scalar. The scalar references are exposed by `internals`.
-- **Competitor benchmark.** A pinned, in-process fplll 5.5.0 harness compares
+- **Competitor benchmarks.** A pinned, in-process fplll 5.5.0 harness compares
   LLL and public CVP calls on identical deterministic inputs, with input,
-  output, and distance fingerprints. The record includes reproducible fplll
+  output, and distance fingerprints. A FLINT Gram-LLL harness matches
+  `lattica`'s Gram-matrix input and unimodular-transform output and verifies the
+  reduction certificate before timing. The record includes reproducible fplll
   `CVPM_PROVED` correctness and Babai-cycle failures discovered while making
   the comparison fair.
 - **`e8_awgn` example**, a nested `E_8` lattice code over a simulated AWGN
@@ -84,11 +86,13 @@ not a field library, and not a lattice-cryptography library.
 - Positive-definiteness uses one fraction-free factorization, adjugates share
   one fraction-free solve with a cofactor fallback for the accepted overflow
   domain, triangular determinants use their diagonal product, and symmetric
-  Gram construction computes one triangle.
+  Gram construction computes one triangle. Symmetric GSO factorization now
+  computes each trailing entry once; determinant classification scans each
+  off-diagonal pair once and skips identity Bareiss updates.
 - The optimization benchmark reports operation counts, proof-tree nodes,
   nanoseconds per node, exact-algebra costs, batch geometry, allocation counts,
-  and deterministic correctness fingerprints. Build-option and rejected
-  crossover measurements are recorded in `BENCHMARKS.md`.
+  and deterministic correctness fingerprints. Build-option, comparison-target,
+  and rejected crossover measurements are recorded in `BENCHMARKS.md`.
 
 ### Notes
 
