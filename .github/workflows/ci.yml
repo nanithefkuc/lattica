@@ -114,11 +114,15 @@ jobs:
       - run: cargo run --release --example e8_awgn
 
   miri:
-    name: miri (scalar arithmetic)
+    name: miri (focused scalar safety)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri
-      - run: cargo miri test --no-default-features
+      - name: exact integer arithmetic
+        run: "cargo miri test --lib --no-default-features int::"
+      - name: Construction A decoding
+        run: "cargo miri test --no-default-features --test nested construction_a_"

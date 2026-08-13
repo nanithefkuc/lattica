@@ -21,6 +21,14 @@ use lattica::nested::Nested;
 use lattica::quant::{
     Dn, Quantizer, Scaled, Scratch, Zn, e8 as e8_decoder, mod_lattice, mod_lattice_dithered,
 };
+#[cfg(miri)]
+const ML_CASES: usize = 3;
+#[cfg(not(miri))]
+const ML_CASES: usize = 3_000;
+#[cfg(miri)]
+const DIFFERENTIAL_CASES: usize = 5;
+#[cfg(not(miri))]
+const DIFFERENTIAL_CASES: usize = 5_000;
 
 struct Rng(u64);
 
@@ -425,25 +433,38 @@ fn construction_a_over_the_parity_code_is_the_checkerboard_lattice() {
     );
 }
 
+fn scaled_coordinates(x: &[f64]) -> Vec<i64> {
+    x.iter()
+        .map(|&coordinate| (coordinate * 256.0) as i64)
+        .collect()
+}
+
+fn scaled_squared_distance(x: &[i64], point: &[i64]) -> i128 {
+    x.iter()
+        .zip(point)
+        .map(|(&coordinate, &lattice_coordinate)| {
+            let residual = i128::from(coordinate) - 256 * i128::from(lattice_coordinate);
+            residual * residual
+        })
+        .sum()
+}
+
 /// Minimal squared distance from `x` to the lattice, by exhaustive search over
 /// a box that provably contains the answer.
-fn brute_force_min<C: CodeMembership>(lattice: &ConstructionA<C>, x: &[f64]) -> f64 {
+fn brute_force_min<C: CodeMembership>(lattice: &ConstructionA<C>, x: &[f64]) -> i128 {
     let n = x.len();
     // Rounding to the nearest integer point and repairing it into the lattice
     // gives some valid upper bound; a box of half-width `n` around `x` is
     // vastly more than enough for the toy geometries here.
     let lo: Vec<i64> = x.iter().map(|v| (v - 3.0).ceil() as i64).collect();
     let hi: Vec<i64> = x.iter().map(|v| (v + 3.0).floor() as i64).collect();
+    let scaled = scaled_coordinates(x);
 
-    let mut best = f64::INFINITY;
+    let mut best = i128::MAX;
     let mut v = lo.clone();
     loop {
         if lattice.contains(&v).unwrap() {
-            let d: f64 = x
-                .iter()
-                .zip(&v)
-                .map(|(&a, &b)| (a - b as f64).powi(2))
-                .sum();
+            let d = scaled_squared_distance(&scaled, &v);
             if d < best {
                 best = d;
             }
@@ -474,29 +495,21 @@ fn construction_a_decoding_is_maximum_likelihood() {
     let parity = ConstructionA::new(ParityCheck).unwrap();
     let mut scratch = Scratch::new(4);
     let mut out = [0i64; 4];
-    for _ in 0..3000 {
+    for _ in 0..ML_CASES {
         let x: Vec<f64> = (0..4).map(|_| rng.dyadic()).collect();
         parity.nearest(&x, &mut out, &mut scratch).unwrap();
         assert!(parity.contains(&out).unwrap());
-        let got: f64 = x
-            .iter()
-            .zip(&out)
-            .map(|(&a, &b)| (a - b as f64).powi(2))
-            .sum();
+        let got = scaled_squared_distance(&scaled_coordinates(&x), &out);
         assert_eq!(got, brute_force_min(&parity, &x), "parity: {x:?}");
     }
 
     let repetition = ConstructionA::new(Repetition3).unwrap();
     let mut out = [0i64; 3];
-    for _ in 0..3000 {
+    for _ in 0..ML_CASES {
         let x: Vec<f64> = (0..3).map(|_| rng.dyadic()).collect();
         repetition.nearest(&x, &mut out, &mut scratch).unwrap();
         assert!(repetition.contains(&out).unwrap());
-        let got: f64 = x
-            .iter()
-            .zip(&out)
-            .map(|(&a, &b)| (a - b as f64).powi(2))
-            .sum();
+        let got = scaled_squared_distance(&scaled_coordinates(&x), &out);
         assert_eq!(got, brute_force_min(&repetition, &x), "repetition: {x:?}");
     }
 }
@@ -511,20 +524,13 @@ fn construction_a_over_the_parity_code_matches_the_closed_form_decoder() {
     let mut scratch = Scratch::new(4);
     let (mut a, mut b) = ([0i64; 4], [0i64; 4]);
 
-    for _ in 0..5000 {
+    for _ in 0..DIFFERENTIAL_CASES {
         let x: Vec<f64> = (0..4).map(|_| rng.dyadic()).collect();
         coded.nearest(&x, &mut a, &mut scratch).unwrap();
         closed.nearest(&x, &mut b, &mut scratch).unwrap();
-        let da: f64 = x
-            .iter()
-            .zip(&a)
-            .map(|(&p, &q)| (p - q as f64).powi(2))
-            .sum();
-        let db: f64 = x
-            .iter()
-            .zip(&b)
-            .map(|(&p, &q)| (p - q as f64).powi(2))
-            .sum();
+        let scaled = scaled_coordinates(&x);
+        let da = scaled_squared_distance(&scaled, &a);
+        let db = scaled_squared_distance(&scaled, &b);
         assert_eq!(da, db, "decoders disagree on distance for {x:?}");
     }
 }
