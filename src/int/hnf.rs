@@ -69,10 +69,7 @@ pub fn hnf<T: Int>(a: &IntMatrix<T>) -> Result<Hnf<T>, RangeError> {
 
         // Drive the column below `pivot_row` to a single nonzero entry. Each
         // pass either finishes the column or strictly reduces the pivot.
-        loop {
-            let Some(smallest) = smallest_nonzero(&h, pivot_row, rows, col)? else {
-                break;
-            };
+        while let Some(smallest) = smallest_nonzero(&h, pivot_row, rows, col)? {
             h.swap_rows(pivot_row, smallest);
             u.swap_rows(pivot_row, smallest);
 
