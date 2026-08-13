@@ -75,9 +75,7 @@ impl<const N: usize> AmbientCore<N> {
             for k in 0..N {
                 let mut numerator = 0i128;
                 for i in 0..N {
-                    let product = cofactors
-                        .get(i, j)
-                        .widen()
+                    let product = Int::widen(cofactors.get(i, j))
                         .checked_mul(i128::from(numerators[i * N + k]))
                         .ok_or_else(|| range_overflow(Op::Mul))?;
                     numerator = numerator
