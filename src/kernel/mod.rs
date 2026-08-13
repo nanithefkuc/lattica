@@ -11,10 +11,10 @@ use crate::error::RangeError;
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 mod x86;
 
-#[cfg(feature = "simd")]
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
 use simdispatch::{Backend, Selection};
 
-#[cfg(feature = "simd")]
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
 const LATTICA_TIERS: &[Backend] = &[Backend::V3GfniCrypto, Backend::V3, Backend::Scalar];
 
 /// Applies a column-major dense transform, `out = input * matrix`.
@@ -172,7 +172,7 @@ fn validate_matrix(matrix: &[f64], rows: usize, cols: usize) -> Result<(), Range
     Ok(())
 }
 
-#[cfg(feature = "simd")]
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
 fn backend() -> Backend {
     use std::sync::LazyLock;
     static BACKEND: LazyLock<Backend> = LazyLock::new(|| {
