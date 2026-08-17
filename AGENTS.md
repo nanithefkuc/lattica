@@ -5,9 +5,11 @@ and tested.
 
 ## What this crate is
 
-Shared arithmetic for point lattices in `Z^n` and `R^n`, underneath `latticode`
-and `gldlc`. **Given a lattice, do arithmetic on it fast and exactly; never
-construct the combinatorial object that defines it.**
+Shared arithmetic for point lattices in `Z^n` and `R^n`, underneath
+`latticode` and `gldlc`. **Given a lattice, do arithmetic on it fast and
+exactly; never construct the combinatorial object that defines it.** Deciding
+lattice points from real targets — quantization, enumeration, ML decoding,
+`mod Λ` — is `lattice-engine`'s, one layer up; nothing here selects a point.
 
 Not a codec. Not a field library — that is `fff`/`fgf`. Not a graph library —
 that is `sgraph`. Not lattice cryptography, ever.
@@ -17,8 +19,8 @@ that is `sgraph`. Not lattice cryptography, ever.
 1. **Only dispatch dependencies.** Runtime dependencies are limited to
    `simdispatch` for the stack-wide backend policy and `archmage` for safe
    capability tokens, both optional under `simd`. Adding `fgf`, `sgraph`,
-   `butterfly-fft`, or `gfm` inverts the stack's layering; CI fails the build
-   if you try.
+   `butterfly-fft`, `gfm`, or `lattice-engine` inverts the stack's layering;
+   CI fails the build if you try.
 2. **No `unsafe`.** Forbidden at the crate root.
 3. **Checked arithmetic only on the integer path.** `Int` deliberately exposes
    no `Add`/`Sub`/`Mul` operators — only `try_add`, `try_sub`, `try_mul`, and
@@ -26,12 +28,12 @@ that is `sgraph`. Not lattice cryptography, ever.
    would produce a wrong basis that passes every downstream shape check. Do not
    "simplify" this by adding operator impls.
 4. **No floating point in an integer answer.** If the input is integral, the
-   output is exact. `f64` appears only where the input is a genuinely real
-   received vector.
-5. **No FMA, no reassociation, no transcendentals on a decision path.** The
-   closed-form decoders must compile to add/sub/compare/round so that two peers
-   on different architectures agree at a Voronoi boundary. Never add `mul_add`
-   to `quant/closed.rs`.
+   output is exact. `f64` appears only in the real-vector kernels and the
+   published real generators.
+5. **No FMA, no reassociation in the dispatched kernels.** SIMD lanes are
+   independent vectors and every lane accumulates rows in scalar order, so the
+   dispatched result is bit-identical to the scalar reference. Never add
+   `mul_add` or a reassociated reduction to `kernel/`.
 6. **Validate before mutating.** A rejected call leaves every output buffer and
    all internal state exactly as it was.
 7. **No bignum.** Fixed-width with a checked magnitude budget. An out-of-range
@@ -47,8 +49,8 @@ Preferred oracles, in order: an exactly checkable certificate (`U·B == H` with
 `|det U| == 1`), a differential against brute force, a published constant, and
 only then a statistical check with a seed and a derived tolerance.
 
-Fixtures under `tests/data/` are format, not test data. Moving a file is fine;
-changing an expected value is a format break that needs a versioned algorithm.
+Fixtures are format, not test data. Moving a file is fine; changing an
+expected value is a format break that needs a versioned algorithm.
 
 ## Commands
 
@@ -64,11 +66,11 @@ RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
 
 Implemented and gated by the release check: the `Int` contract, exact integer
 linear algebra, the `Z_q` ring, `Gram`/`Basis`, named lattices through `BW_16`
-and `Λ_24`, exact short-vector and Voronoi-relevant enumeration, closed-form
-and maximum-likelihood quantizers, `mod Λ`, nested pairs, Construction A/D,
-fraction-free GSO, LLL, Babai, and dispatched real-vector batch transforms.
+and `Λ_24`, exact short-vector and Voronoi-relevant enumeration, nested pairs,
+code-free Construction A/D generator constructions, fraction-free GSO, LLL,
+and dispatched real-vector batch transforms.
 
-Two rules specific to what is already here:
+Three rules specific to what is already here:
 
 - **A lattice vector is an integer coordinate vector.** Metric questions go
   through the Gram matrix, never through ambient coordinates. `E_8` has no
@@ -76,23 +78,6 @@ Two rules specific to what is already here:
 - **Named constructors never store a constant.** Determinants, minimal norms,
   and kissing numbers are computed. Hardcoding one makes the acceptance tests
   circular, which is worse than having no test.
-- **The decoders use only add, subtract, compare, and round.** That operation
-  set is why two peers on different architectures agree at a Voronoi boundary.
-  `f64::round` is deliberately *not* used — it is `std`-only, and the hand
-  written `round_away` states the tie rule directly. Never introduce `mul_add`,
-  a transcendental, or a reassociation into `quant/closed.rs`.
-- **`tests/data/ties.txt` is format.** Changing an expected value there is a
-  wire break requiring a versioned decoder, not an edited line.
-- **Ties break translation and negation symmetry, and that is inherent.**
-  `Q(-x) = -Q(x)` and `(x + λ) mod Λ = x mod Λ` hold away from Voronoi
-  boundaries and cannot hold on them: the tie set is symmetric and any rule
-  must pick one side. Assert on the *distance*, which is always invariant, not
-  on the point. Do not "fix" this.
-- **The nesting index is `sqrt(det Λ_s / det Λ_c)`.** `det` here is the Gram
-  determinant, so the ratio is squared. Writing it unsquared is the standing
-  mistake in this crate's history; a test exists solely to catch it.
-- **`cargo run --release --example e8_awgn` is the release gate.** If the
-  measured shaping gain leaves 0.6539 dB, something is broken.
 - **Reduction runs on the Gram matrix and `δ` is an exact rational.** Do not
   introduce an `f64` δ or an `f64` Cholesky: the reduced-basis predicate must
   be the same one `reduce::is_reduced` checks, or the certificate means

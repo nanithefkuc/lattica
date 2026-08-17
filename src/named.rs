@@ -136,7 +136,7 @@ pub fn d_n_basis<T: Int>(n: usize) -> Result<Basis<T>, LatticeError> {
 
 /// The exceptional lattice `E_8`, as a Gram matrix.
 ///
-/// For the *decoder* see [`crate::quant::e8`]; this is the algebraic side.
+/// For the *decoder* see `lattice-engine`'s `e8`; this is the algebraic side.
 ///
 /// Determinant 1, minimal squared norm 2, kissing number 240. It is the
 /// smallest even unimodular lattice, and the densest packing in eight
