@@ -45,7 +45,7 @@ pub mod closed;
 pub mod enumerate;
 pub mod highdim;
 pub mod modulo;
-pub mod relevant;
+pub use crate::relevant;
 
 use crate::error::{DecodeError, Op, RangeError};
 

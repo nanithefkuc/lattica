@@ -248,7 +248,12 @@ fn gram_from_scaled_generator<T: Int>(
     Gram::from_rows(dimension, &data)
 }
 
-pub(crate) const BW16_NUMERATORS: [i8; 16 * 16] = [
+/// Published generator numerators of `BW_16`, one basis vector per row.
+///
+/// The lattice is this matrix divided by `2`. `bw16` derives the Gram matrix
+/// from it; the ambient maximum-likelihood decoder in `lattice-engine`
+/// consumes it to map basis coordinates to ambient numerators exactly.
+pub const BW16_NUMERATORS: [i8; 16 * 16] = [
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 2, 0, 0, 0, 0, 0, 2, 0, 0, 0, 2, 0, 2, 0, 0,
     0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 2,
     0, 0, 0, 0, 2, 0, 0, 2, 0, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 0, 0, 0, 0, 2, 0, 2,
@@ -259,7 +264,13 @@ pub(crate) const BW16_NUMERATORS: [i8; 16 * 16] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4,
 ];
 
-pub(crate) const LEECH24_NUMERATORS: [i8; 24 * 24] = [
+/// Published generator numerators of the Leech lattice `Λ_24`, one basis
+/// vector per row.
+///
+/// The lattice is this matrix divided by `√8`. `leech24` derives the Gram
+/// matrix from it; the ambient maximum-likelihood decoder in `lattice-engine`
+/// consumes it to map basis coordinates to ambient numerators exactly.
+pub const LEECH24_NUMERATORS: [i8; 24 * 24] = [
     8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 4, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
