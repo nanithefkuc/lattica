@@ -80,6 +80,7 @@ pub mod named;
 pub mod nested;
 pub mod quant;
 pub mod reduce;
+pub mod relevant;
 pub mod shortvec;
 pub mod zq;
 
