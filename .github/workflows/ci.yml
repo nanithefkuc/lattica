@@ -80,10 +80,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      # Invariant I2: two peers on different architectures must decode a
-      # boundary point identically. A build-only job proves nothing about
-      # that, so the fixtures in tests/vectors.rs are *executed* under
-      # emulation on every target, not merely compiled for them.
+      # Exact integer arithmetic must behave identically on every
+      # architecture. A build-only job proves nothing about that, so the
+      # acceptance tests are *executed* under emulation on every target, not
+      # merely compiled for them.
       - uses: taiki-e/setup-cross-toolchain-action@v1
         with:
           target: ${{ matrix.target }}
@@ -102,17 +102,6 @@ jobs:
           targets: ${{ matrix.target }}
       - run: cargo build --target ${{ matrix.target }} --no-default-features
 
-  gate:
-    name: release gate (E_8 shaping gain)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      # The release acceptance criterion: the nested E_8 code must reproduce the
-      # published 0.65 dB shaping gain of its Voronoi region. A decode loop
-      # that merely runs is not evidence.
-      - run: cargo run --release --example e8_awgn
-
   miri:
     name: miri (focused scalar safety)
     runs-on: ubuntu-latest
@@ -124,5 +113,3 @@ jobs:
           components: miri
       - name: exact integer arithmetic
         run: "cargo miri test --lib --no-default-features int::"
-      - name: Construction A decoding
-        run: "cargo miri test --no-default-features --test nested construction_a_"

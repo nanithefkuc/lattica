@@ -95,7 +95,7 @@ impl fmt::Display for RangeError {
         }
     }
 }
-/// Failure while quantizing or decoding to a lattice point.
+/// Failure while decoding to or enumerating lattice points.
 ///
 /// Not `Eq`: [`BudgetExhausted`](DecodeError::BudgetExhausted) carries the
 /// squared radius that was in effect, and a float has no total equality.

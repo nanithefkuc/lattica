@@ -4,6 +4,9 @@
 //! The guiding rule: *given a lattice, do arithmetic on it fast and exactly;
 //! never construct the combinatorial object that defines it.* Codes, sparsity
 //! patterns, and graphs arrive through seams — they are never generated here.
+//! Deciding lattice points from real targets — quantization, enumeration,
+//! maximum-likelihood decoding, `mod Λ` — is `lattice-engine`'s, one layer
+//! up; this crate computes facts, never decisions.
 //!
 //! # Exactness
 //!
@@ -59,15 +62,10 @@
 //!
 //! Implemented: the scalar contract, exact integer linear algebra, the `Z_q`
 //! ring, lattice representation, named lattices through `BW_16` and `Λ_24`,
-//! exact short-vector enumeration, closed-form and maximum-likelihood
-//! quantizers, `mod Λ`, nested pairs, Construction A/D, fraction-free GSO,
-//! LLL, Babai, budgeted Schnorr–Euchner nearest/list enumeration,
-//! low-dimensional Voronoi-relevant vectors, and dispatched real-vector batch
-//! transforms.
-//!
-//! `cargo run --release --example e8_awgn` runs a nested `E_8` lattice code
-//! over a simulated AWGN channel and checks that it reproduces the published
-//! shaping gain of the `E_8` Voronoi region.
+//! exact short-vector enumeration, Voronoi-relevant vectors in low dimension,
+//! nested pairs, code-free Construction A/D generator constructions,
+//! fraction-free GSO, LLL, and dispatched real-vector batch transforms.
+//! Decoding lives in `lattice-engine`.
 
 #![forbid(unsafe_code)]
 pub mod basis;
@@ -78,7 +76,6 @@ pub mod int;
 pub mod kernel;
 pub mod named;
 pub mod nested;
-pub mod quant;
 pub mod reduce;
 pub mod relevant;
 pub mod shortvec;
@@ -88,7 +85,6 @@ pub use basis::{Basis, Gram};
 pub use error::{DecodeError, LatticeError, Op, RangeError, ReduceError};
 pub use int::Int;
 pub use nested::Nested;
-pub use quant::{Quantizer, Scratch, mod_lattice};
 pub use reduce::{Delta, Reduced, lll};
 pub use shortvec::{Census, census};
 pub use zq::Zq;

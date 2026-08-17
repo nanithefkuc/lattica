@@ -5,6 +5,36 @@ All notable changes to `lattica` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0]
+
+Decoding moves out: this crate is now the lattice-arithmetic object only, and
+every decision on a real received vector lives in `lattice-engine`.
+
+### Removed
+
+- The `quant` module and its root re-exports (`Quantizer`, `Scratch`,
+  `mod_lattice`): the closed-form Conway–Sloane decoders, Babai rounding and
+  nearest-plane, budgeted Schnorr–Euchner nearest and list enumeration,
+  maximum-likelihood `BW_16`/`Λ_24` decoding, `mod Λ` with dithering, and
+  scaled lattices.
+- `CodeMembership` and `ConstructionA` with its decode; the Construction A
+  *generator* construction stays. The decode half is `lattice-engine`'s, with
+  the seam it serves.
+- The `e8_awgn` and `highdim_ml` examples, the decoder test suites
+  (`quantize`, `vectors`, `enumerate`, `highdim`), the `ties.txt` fixture, and
+  the decode benchmark groups. All moved with the decoders.
+
+### Added
+
+- Public `BW16_NUMERATORS` and `LEECH24_NUMERATORS`: the published generator
+  numerators, consumed by `lattice-engine`'s ambient maximum-likelihood
+  decoders.
+
+### Changed
+
+- `relevant` is a root module (`lattica::relevant`); the `quant::relevant`
+  path is gone with `quant`.
+
 ## [0.1.0]
 
 Initial release: the shared arithmetic layer for point lattices in `Z^n` and
