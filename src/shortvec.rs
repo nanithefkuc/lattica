@@ -163,7 +163,7 @@ impl<O: EnumerationObserver> EnumerationObserver for &mut O {
 #[cfg(feature = "internals")]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EnumerationStats {
-    /// Depth-first nodes visited: every [`Walk::descend`](struct@Walk) entry.
+    /// Depth-first nodes visited: every recursion entry of the walk.
     pub nodes: u64,
     /// Complete coordinate assignments evaluated, including the all-zero one.
     pub leaves: u64,
