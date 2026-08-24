@@ -587,6 +587,44 @@ identical-binary dispersion and sit in cells where tails are under 5% of
 total work. The direct-norm recomputation remains untouched here and still
 dominates — that is the next isolated change.
 
+## Carried enumeration norms
+
+Command:
+
+```sh
+taskset -c 2 cargo bench --bench optimization --features internals
+```
+
+Measured 2026-08-24 on top of the amortized tails. At a complete assignment,
+the accumulated scaled partial norm `acc` equals `c G cᵀ · scale` exactly —
+every level contributed its `S_k² · weights[k]` term on the way down — so the
+leaf derives the exact norm with one checked division instead of an `O(n²)`
+recomputation over the Gram matrix. The direct evaluation survives as a
+differential oracle: a test compares every carried norm against
+`Gram::norm_sq` across five lattices at three times their minimal diagonal.
+The unstable counter is renamed from `direct_norms` to `leaf_norms`
+accordingly.
+
+Combined effect on the corpus, against the pre-amortization baseline:
+
+| Dimension | Geometry | Time | Reduction |
+| ---: | :--- | ---: | ---: |
+| 8 | zn_radius_2 | 15.3 → 13.3 us | -12.9% |
+| 8 | a_n_radius_2 | 12.1 → 9.5 us | -21.9% |
+| 8 | d_n_radius_4 | 196.0 → 75.5 us | -61.5% |
+| 8 | e8_radius_2 | 53.4 → 23.8 us | -55.3% |
+| 16 | zn_radius_2 | 125.6 → 110.3 us | -12.2% |
+| 16 | a_n_radius_2 | 125.7 → 76.1 us | -39.5% |
+| 16 | d_n_radius_4 | 15.92 → 4.53 ms | -71.5% |
+| 24 | zn_radius_2 | 571.8 → 453.9 us | -20.6% |
+| 24 | a_n_radius_2 | 537.0 → 309.8 us | -42.3% |
+| 24 | d_n_radius_4 | 181.1 → 50.2 ms | -72.3% |
+
+Every cell improves, by up to 3.6x at the dimension-24 weight-four shell.
+Node, leaf, vector-count, and allocation figures are unchanged; emitted
+vectors and norms are pinned by the closed-form shell oracles and the
+per-vector differential.
+
 ## Comparison target selection
 
 fplll remains the useful general-CVP target: its in-process public API exposes

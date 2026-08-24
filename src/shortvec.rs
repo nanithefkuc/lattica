@@ -132,7 +132,7 @@ trait EnumerationObserver {
     fn node(&mut self) {}
     fn leaf(&mut self) {}
     fn tail_term(&mut self) {}
-    fn direct_norm(&mut self) {}
+    fn leaf_norm(&mut self) {}
 }
 
 struct Unobserved;
@@ -152,8 +152,8 @@ impl<O: EnumerationObserver> EnumerationObserver for &mut O {
         (**self).tail_term();
     }
 
-    fn direct_norm(&mut self) {
-        (**self).direct_norm();
+    fn leaf_norm(&mut self) {
+        (**self).leaf_norm();
     }
 }
 
@@ -167,10 +167,10 @@ pub struct EnumerationStats {
     pub nodes: u64,
     /// Complete coordinate assignments evaluated, including the all-zero one.
     pub leaves: u64,
-    /// Exact multiply-add terms formed by per-node tail sums.
+    /// Exact multiply-add terms formed by the amortized per-level tail sums.
     pub tail_terms: u64,
-    /// Direct `c G cᵀ` recomputations at emitted vectors.
-    pub direct_norms: u64,
+    /// Exact norms derived at leaves from the accumulated scaled sum.
+    pub leaf_norms: u64,
 }
 
 #[cfg(feature = "internals")]
@@ -187,8 +187,8 @@ impl EnumerationObserver for EnumerationStats {
         self.tail_terms += 1;
     }
 
-    fn direct_norm(&mut self) {
-        self.direct_norms += 1;
+    fn leaf_norm(&mut self) {
+        self.leaf_norms += 1;
     }
 }
 
@@ -219,7 +219,6 @@ where
 
     let mut walk = Walk {
         f: &factored,
-        gram: &widened,
         n,
         limit,
         coords: vec![0i128; n],
@@ -423,7 +422,6 @@ impl Factorization {
 /// Depth-first traversal state.
 struct Walk<'a, F, O> {
     f: &'a Factorization,
-    gram: &'a [i128],
     n: usize,
     limit: i128,
     coords: Vec<i128>,
@@ -438,7 +436,7 @@ impl<F: FnMut(&[i128], i128), O: EnumerationObserver> Walk<'_, F, O> {
     /// and `tail` the exact suffix sum of the coordinates already fixed.
     ///
     /// The caller forms that suffix sum once for the whole sibling group, so
-    /// no node recomputes a dot product that its parent could amortize.
+    /// no node recomputes an dot product that its parent could amortize.
     fn descend(&mut self, remaining: usize, acc: i128, tail: i128) -> Result<(), DecodeError> {
         self.nodes += 1;
         self.observer.node();
@@ -451,8 +449,10 @@ impl<F: FnMut(&[i128], i128), O: EnumerationObserver> Walk<'_, F, O> {
             if self.coords.iter().all(|&c| c == 0) {
                 return Ok(());
             }
-            self.observer.direct_norm();
-            let norm_sq = self.exact_norm()?;
+            // Every level contributed `S_k² · weights[k]` on the way down,
+            // so `acc` now holds exactly `c G cᵀ · scale`.
+            self.observer.leaf_norm();
+            let norm_sq = exact_div(acc, self.f.scale)?;
             (self.visit)(&self.coords, norm_sq);
             return Ok(());
         }
@@ -506,26 +506,6 @@ impl<F: FnMut(&[i128], i128), O: EnumerationObserver> Walk<'_, F, O> {
         }
         self.coords[k] = 0;
         Ok(())
-    }
-
-    fn exact_norm(&self) -> Result<i128, RangeError> {
-        let n = self.n;
-        let mut total = 0i128;
-        for i in 0..n {
-            let ci = self.coords[i];
-            if ci == 0 {
-                continue;
-            }
-            let mut row = 0i128;
-            for j in 0..n {
-                let cj = self.coords[j];
-                if cj != 0 {
-                    row = add(row, mul(self.gram[i * n + j], cj)?)?;
-                }
-            }
-            total = add(total, mul(ci, row)?)?;
-        }
-        Ok(total)
     }
 }
 
@@ -673,16 +653,58 @@ mod tests {
         assert_eq!(census.kissing_number, 8);
         assert_eq!(census.nodes, stats.nodes);
         // One leaf per emitted vector plus the rejected all-zero assignment,
-        // and one direct norm recomputation per emitted vector.
+        // and one carried norm per emitted vector.
         assert_eq!(stats.leaves, census.total + 1);
-        assert_eq!(stats.direct_norms, census.total);
+        assert_eq!(stats.leaf_norms, census.total);
         assert!(stats.nodes > stats.leaves);
         assert!(stats.tail_terms > 0);
 
         // E8's root shell: the published kissing number, recovered.
         let (census, stats) = census_profiled(&e8::<i64>().unwrap(), DEFAULT_NODE_BUDGET).unwrap();
         assert_eq!(census.kissing_number, 240);
-        assert_eq!(stats.direct_norms, census.total);
+        assert_eq!(stats.leaf_norms, census.total);
         assert_eq!(stats.leaves, census.total + 1);
+    }
+
+    #[cfg(feature = "internals")]
+    #[test]
+    fn carried_norms_match_the_direct_quadratic_form() {
+        use super::{Unobserved, for_each_short_observed};
+        use crate::int::Int;
+        use crate::named::{a_n, d_n};
+
+        // The direct `O(n²)` evaluation through `Gram::norm_sq` is the oracle
+        // for every carried norm, across lattices whose factorizations clear
+        // denominators differently. Radius three times the minimal diagonal
+        // reaches beyond the root shell.
+        for gram in [
+            crate::named::zn::<i64>(5).unwrap(),
+            a_n::<i64>(7).unwrap(),
+            d_n::<i64>(6).unwrap(),
+            crate::named::e8::<i64>().unwrap(),
+            Gram::<i64>::from_rows(2, &[2, -1, -1, 2]).unwrap(),
+        ] {
+            let n = gram.dim();
+            let radius_sq = 3 * (0..n).map(|i| gram.entry(i, i).widen()).min().unwrap();
+            let mut checked = 0u64;
+            for_each_short_observed(
+                &gram,
+                radius_sq,
+                DEFAULT_NODE_BUDGET,
+                |coords, norm_sq| {
+                    let narrow: Vec<i64> =
+                        coords.iter().map(|&v| i64::try_from(v).unwrap()).collect();
+                    assert_eq!(
+                        Ok(i64::try_from(norm_sq).unwrap()),
+                        gram.norm_sq(&narrow),
+                        "coords {coords:?}"
+                    );
+                    checked += 1;
+                },
+                &mut Unobserved,
+            )
+            .unwrap();
+            assert!(checked > 10, "only {checked} vectors were exercised");
+        }
     }
 }

@@ -531,8 +531,8 @@ fn run_enumeration_cell(gram: &Gram<i128>, radius_sq: i128, expected_total: u64,
         "{name}: one leaf per emitted vector plus the zero assignment"
     );
     assert_eq!(
-        stats.direct_norms, expected_total,
-        "{name}: one direct norm per emitted vector"
+        stats.leaf_norms, expected_total,
+        "{name}: one carried norm per emitted vector"
     );
 
     let elapsed = measured(|| {
@@ -561,7 +561,7 @@ fn run_enumeration_cell(gram: &Gram<i128>, radius_sq: i128, expected_total: u64,
         ("enum_nodes", stats.nodes.to_string()),
         ("enum_leaves", stats.leaves.to_string()),
         ("enum_tail_terms", stats.tail_terms.to_string()),
-        ("enum_direct_norms", stats.direct_norms.to_string()),
+        ("enum_leaf_norms", stats.leaf_norms.to_string()),
         ("enum_allocations", allocations.to_string()),
     ] {
         println!("{metric},{dimension},{name},{value},{fingerprint}");

@@ -54,6 +54,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Exact enumeration amortizes each suffix dot product across a node's whole
   sibling group instead of recomputing one per child. Tail terms drop by 23%
   to 57% across the corpus with unchanged emitted vectors and counts.
+- Exact enumeration derives each emitted vector's norm from the accumulated
+  scaled partial sum — exactly `c G cᵀ · scale` at completion — instead of
+  recomputing the quadratic form. The enumeration corpus improves by 12% to
+  72%, with every carried norm checked against a direct `O(n²)` oracle in
+  tests.
 
 ## [0.2.0]
 
