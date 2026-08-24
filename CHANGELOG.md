@@ -25,6 +25,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   for preflight and commit while preserving checked arithmetic order. The nine
   reduction geometries improve by 3.3% to 10.9%, with unchanged certificates
   and operation counts.
+- Exact adjacent GSO swaps hoist invariant minors and update their two affected
+  rows through contiguous preflight and commit slices. Eight of nine reduction
+  geometries improve, including 4.2% to 7.9% at dimensions 16 and 24; the
+  comparison corpus reaches measurement parity with fplll there.
 
 ## [0.2.0]
 

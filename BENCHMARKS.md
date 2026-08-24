@@ -277,6 +277,48 @@ The median of three standard comparison runs changed from
 update target. Generated benchmark assembly keeps remaining bounds failures in
 cold panic blocks rather than the contiguous arithmetic loops.
 
+## Contiguous exact adjacent swaps
+
+Command:
+
+```sh
+taskset -c 2 cargo bench --bench optimization --features internals
+taskset -c 2 cargo bench --bench fplll_compare
+```
+
+Measured 2026-08-24 against the committed contiguous-state baseline. The exact
+adjacent-swap recurrence now hoists its three minors and swapped lambda, reads
+the two affected fraction-free rows through validated contiguous slices,
+preflights both outputs into split update storage, and commits the trailing rows
+with slice copies. No sparse branch, common-factor cancellation, or unchecked
+division was selected.
+
+| Dimension | Shear bits | Before | After | Reduction |
+| ---: | ---: | ---: | ---: | ---: |
+| 8 | 2 | 3.288 µs | 3.340 µs | -1.6% |
+| 8 | 4 | 4.416 µs | 3.975 µs | 10.0% |
+| 8 | 6 | 4.378 µs | 4.104 µs | 6.3% |
+| 16 | 2 | 16.744 µs | 15.413 µs | 7.9% |
+| 16 | 4 | 19.261 µs | 18.059 µs | 6.2% |
+| 16 | 6 | 20.039 µs | 18.930 µs | 5.5% |
+| 24 | 2 | 44.596 µs | 42.061 µs | 5.7% |
+| 24 | 4 | 47.829 µs | 45.808 µs | 4.2% |
+| 24 | 6 | 49.145 µs | 46.941 µs | 4.5% |
+
+The dimension-8/shear-2 movement is within short-run noise; the other eight
+geometries improve, including every dimension-16/24 case. All fingerprints and
+factorization, quotient, reduction, swap, iteration, Gram-copy, swap-term, and
+checked-update counts are unchanged. Differential tests compare every minor and
+lambda with a fresh factorization after each forward and reverse swap at
+`i32`, `i64`, and `i128`.
+
+The median of three standard comparison runs changed from
+`4.888/47.706/169.351 µs` to `4.753/45.528/163.560 µs`, reductions of
+2.8%, 4.6%, and 3.4%. This puts exact Gram-plus-transform LLL at measurement
+parity with fplll's ambient-basis boundary at dimensions 16 and 24. The
+post-change profile is dominated by checked `i128` division and the two exact
+update families; further ordinary-LLL recurrence changes need new evidence.
+
 ## Comparison target selection
 
 fplll remains the useful general-CVP target: its in-process public API exposes
@@ -368,17 +410,17 @@ reduces in place. Input construction is outside both timers.
 
 | Dimension | `lattica` median | fplll median | Faster library |
 | ---: | ---: | ---: | ---: |
-| 8 | 4.888 µs | 20.829 µs | `lattica` 4.26x |
-| 16 | 47.706 µs | 46.171 µs | fplll 1.03x |
-| 24 | 169.351 µs | 164.156 µs | fplll 1.03x |
+| 8 | 4.753 µs | 20.829 µs | `lattica` 4.38x |
+| 16 | 45.528 µs | 46.171 µs | parity |
+| 24 | 163.560 µs | 164.156 µs | parity |
 
 Incremental exact GSO updates, lazy reduction, the exact zero-quotient filter,
-and contiguous transactional state updates removed the earlier
-orders-of-magnitude gap and narrowed the remaining comparison. fplll remains
-slightly faster at dimensions 16 and 24, while `lattica` is faster at
-dimension 8. The comparison is deliberately not called
-contract-equivalent: fplll reduces an ambient basis without returning the
-transform, while `lattica` reduces a Gram matrix and always returns it.
+contiguous transactional state updates, and contiguous adjacent swaps removed
+the earlier orders-of-magnitude gap. `lattica` is faster at dimension 8 and at
+measurement parity with fplll at dimensions 16 and 24. The comparison is
+deliberately not called contract-equivalent: fplll reduces an ambient basis
+without returning the transform, while `lattica` reduces a Gram matrix and
+always returns it.
 
 The general-CVP comparison, its fplll `CVPM_PROVED` miss and Babai-cycle
 reproducers, and their data files moved to `lattice-engine` with the CVP

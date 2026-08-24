@@ -164,42 +164,57 @@ impl<T: Int> Gso<T> {
     /// Updates the exact factorization after swapping `b_{k-1}` and `b_k`.
     pub(crate) fn swap_adjacent(&mut self, k: usize) -> Result<(), RangeError> {
         debug_assert!(k > 0 && k < self.n);
+        let n = self.n;
         let previous = k - 1;
-        let lambda = self.lambda(k, previous);
-        let old_minor = self.minor(k);
-        let new_minor = self
-            .minor(previous)
-            .try_mul(self.minor(k + 1))?
+        let previous_minor = self.minors[previous];
+        let old_minor = self.minors[k];
+        let next_minor = self.minors[k + 1];
+        let previous_start = previous * n;
+        let current_start = k * n;
+        let lambda = self.upper[previous_start + k];
+        let new_minor = previous_minor
+            .try_mul(next_minor)?
             .try_add(lambda.try_mul(lambda)?)?
             .try_div_exact(old_minor)?;
 
+        let (previous_updates, current_updates) = self.update.split_at_mut(n);
         for j in 0..previous {
-            self.update[j] = self.lambda(k, j);
-            self.update[self.n + j] = self.lambda(previous, j);
+            let row_start = j * n;
+            previous_updates[j] = self.upper[row_start + k];
+            current_updates[j] = self.upper[row_start + previous];
         }
-        for i in k + 1..self.n {
-            self.update[i] = self
-                .lambda(i, previous)
-                .try_mul(lambda)?
-                .try_add(self.lambda(i, k).try_mul(self.minor(previous))?)?
-                .try_div_exact(old_minor)?;
-            self.update[self.n + i] = self
-                .lambda(i, previous)
-                .try_mul(self.minor(k + 1))?
-                .try_sub(self.lambda(i, k).try_mul(lambda)?)?
-                .try_div_exact(old_minor)?;
+        {
+            let previous_row = &self.upper[previous_start..previous_start + n];
+            let current_row = &self.upper[current_start..current_start + n];
+            for (((previous_out, current_out), &previous_lambda), &current_lambda) in
+                previous_updates[k + 1..]
+                    .iter_mut()
+                    .zip(current_updates[k + 1..].iter_mut())
+                    .zip(previous_row[k + 1..].iter())
+                    .zip(current_row[k + 1..].iter())
+            {
+                *previous_out = previous_lambda
+                    .try_mul(lambda)?
+                    .try_add(current_lambda.try_mul(previous_minor)?)?
+                    .try_div_exact(old_minor)?;
+                *current_out = previous_lambda
+                    .try_mul(next_minor)?
+                    .try_sub(current_lambda.try_mul(lambda)?)?
+                    .try_div_exact(old_minor)?;
+            }
         }
 
         self.minors[k] = new_minor;
-        self.upper[previous * self.n + previous] = new_minor;
+        self.upper[previous_start + previous] = new_minor;
         for j in 0..previous {
-            self.upper[j * self.n + previous] = self.update[j];
-            self.upper[j * self.n + k] = self.update[self.n + j];
+            let row_start = j * n;
+            self.upper[row_start + previous] = previous_updates[j];
+            self.upper[row_start + k] = current_updates[j];
         }
-        for i in k + 1..self.n {
-            self.upper[previous * self.n + i] = self.update[i];
-            self.upper[k * self.n + i] = self.update[self.n + i];
-        }
+        self.upper[previous_start + k + 1..previous_start + n]
+            .copy_from_slice(&previous_updates[k + 1..]);
+        self.upper[current_start + k + 1..current_start + n]
+            .copy_from_slice(&current_updates[k + 1..]);
         Ok(())
     }
 
@@ -300,7 +315,7 @@ impl<T: Int> Gso<T> {
 mod tests {
     use super::Gso;
     use crate::basis::{Basis, Gram};
-    use crate::int::IntMatrix;
+    use crate::int::{Int, IntMatrix};
     use crate::named::{a_n, d_n, e8, zn};
 
     #[test]
@@ -425,17 +440,19 @@ mod tests {
         }
     }
 
-    #[test]
-    fn adjacent_swap_updates_match_fresh_factorization() {
-        let n = 8;
+    fn adjacent_swap_updates_match<T: Int>() {
+        let n = 6;
         let mut basis = Vec::with_capacity(n * n);
         for row in 0..n {
             for column in 0..n {
-                basis.push(if row == column {
-                    4
+                let value = if row == column {
+                    1
+                } else if row == column + 1 {
+                    if row % 2 == 0 { -1 } else { 1 }
                 } else {
-                    i64::try_from((row * 7 + column * 5 + 1) % 7).unwrap() - 3
-                });
+                    0
+                };
+                basis.push(T::from_i8(value));
             }
         }
         let gram = Basis::from_rows(n, n, &basis).unwrap().gram().unwrap();
@@ -450,5 +467,12 @@ mod tests {
                 Gram::new(IntMatrix::from_rows(n, n, matrix.as_slice()).unwrap()).unwrap();
             assert_eq!(updated, Gso::new(&fresh_gram).unwrap());
         }
+    }
+
+    #[test]
+    fn adjacent_swap_updates_match_fresh_factorization_at_every_width() {
+        adjacent_swap_updates_match::<i32>();
+        adjacent_swap_updates_match::<i64>();
+        adjacent_swap_updates_match::<i128>();
     }
 }
