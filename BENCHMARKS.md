@@ -172,6 +172,35 @@ LLL retains its eager pass because its insertion predicate consumes every
 projected coefficient.
 
 
+## Exact zero-quotient filter
+
+Command:
+
+```sh
+taskset -c 2 cargo bench --bench fplll_compare
+taskset -c 2 cargo bench --bench optimization --features internals
+```
+
+Measured 2026-08-24 immediately after the lazy-reduction pass. The comparison
+A/B again used 101 internal samples; the table reports one post-lazy baseline
+and the median of three post-change runs. Before calling checked nearest
+division, LLL now proves `|λ[k][j]| <= d[j+1] / 2` with the overflow-safe
+comparison `magnitude <= denominator - magnitude`. That condition is exactly
+the zero-quotient condition, including ties. Values whose magnitude cannot be
+represented, such as the signed minimum, retain the full division path.
+
+| Dimension | Before | After | Reduction |
+| ---: | ---: | ---: | ---: |
+| 8 | 5.536 µs | 4.856 µs | 12.3% |
+| 16 | 58.354 µs | 50.970 µs | 12.7% |
+| 24 | 208.929 µs | 182.916 µs | 12.5% |
+
+The nine shear geometries improved by 2.7% to 12.5%; geometries with more
+nonzero reductions gain less because their divisions remain necessary.
+Factorization, nonzero size-reduction, swap, iteration, Gram-copy, and
+checked-update counts were unchanged. The randomized exact-certificate suite
+continued to pass.
+
 ## Comparison target selection
 
 fplll remains the useful general-CVP target: its in-process public API exposes
@@ -263,13 +292,14 @@ reduces in place. Input construction is outside both timers.
 
 | Dimension | `lattica` median | fplll median | Faster library |
 | ---: | ---: | ---: | ---: |
-| 8 | 6.608 µs | 20.829 µs | `lattica` 3.15x |
-| 16 | 64.895 µs | 46.171 µs | fplll 1.41x |
-| 24 | 238.518 µs | 164.156 µs | fplll 1.45x |
+| 8 | 4.856 µs | 20.829 µs | `lattica` 4.29x |
+| 16 | 50.970 µs | 46.171 µs | fplll 1.10x |
+| 24 | 182.916 µs | 164.156 µs | fplll 1.11x |
 
-Incremental exact GSO updates removed the earlier orders-of-magnitude gap.
-fplll remains faster at dimensions 16 and 24, while `lattica` is faster at
-dimension 8. The remaining comparison is deliberately not called
+Incremental exact GSO updates, lazy reduction, and the exact zero-quotient
+filter removed the earlier orders-of-magnitude gap and narrowed the remaining
+comparison. fplll remains faster at dimensions 16 and 24, while `lattica` is
+faster at dimension 8. The comparison is deliberately not called
 contract-equivalent: fplll reduces an ambient basis without returning the
 transform, while `lattica` reduces a Gram matrix and always returns it.
 

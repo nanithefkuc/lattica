@@ -26,8 +26,9 @@
 //! Reduction is per-code setup, but it still keeps the symmetric Gram matrix
 //! and fraction-free orthogonalization synchronized after every elementary
 //! basis operation. Ordinary LLL delays reductions that cannot affect the
-//! next Lovász test until that test passes; every quotient and decision remains
-//! exact.
+//! next Lovász test until that test passes, and proves zero quotients with an
+//! exact magnitude comparison before entering checked integer division. Every
+//! quotient and decision remains exact.
 
 // The `Delta` bounds check widens two `u32`s; nothing else here leaves the
 // integers.
@@ -489,10 +490,16 @@ fn size_reduce_pair<T: Int, O: ReductionObserver>(
     source: usize,
     observer: &mut O,
 ) -> Result<(), ReduceError> {
-    let quotient = div_nearest(gso.lambda(target, source), gso.minor(source + 1))?;
-    if quotient.is_zero() {
-        return Ok(());
+    let coefficient = gso.lambda(target, source);
+    let denominator = gso.minor(source + 1);
+    if let Ok(magnitude) = coefficient.try_abs() {
+        // `2 * magnitude <= denominator` without overflowing the product.
+        // In that case the nearest quotient is zero, including exact ties.
+        if magnitude <= denominator.try_sub(magnitude)? {
+            return Ok(());
+        }
     }
+    let quotient = div_nearest(coefficient, denominator)?;
     let state_updates = state.subtract(target, source, quotient)?;
     gso.size_reduce(target, source, quotient)?;
     observer.size_reduction(state_updates + 2 * u64::try_from(source + 1).unwrap_or(u64::MAX));
