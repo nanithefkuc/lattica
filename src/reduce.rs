@@ -431,31 +431,40 @@ impl<T: Int> State<T> {
         if factor.is_zero() {
             return Ok(0);
         }
-        let n = self.gram.rows();
         let mut checked_updates = 0u64;
 
-        // Match the old row-then-column operation order while preflighting
-        // every checked expression. The diagonal sees the already-updated
-        // target/source entry during the column operation.
-        for column in 0..n {
-            let target_value = self.gram.get(target, column);
-            let source_value = self.gram.get(source, column);
-            self.gram_row[column] = if source_value.is_zero() {
-                target_value
-            } else {
-                checked_updates += 2;
-                target_value.try_sub(factor.try_mul(source_value)?)?
-            };
-
-            let target_value = self.transform.get(target, column);
-            let source_value = self.transform.get(source, column);
-            self.transform_row[column] = if source_value.is_zero() {
+        // Preflight every checked expression into scratch. The two immutable
+        // rows establish the geometry once, so the inner loop carries no
+        // matrix index arithmetic or repeated bounds assertions.
+        for ((output, &target_value), &source_value) in self
+            .gram_row
+            .iter_mut()
+            .zip(self.gram.row(target))
+            .zip(self.gram.row(source))
+        {
+            *output = if source_value.is_zero() {
                 target_value
             } else {
                 checked_updates += 2;
                 target_value.try_sub(factor.try_mul(source_value)?)?
             };
         }
+        for ((output, &target_value), &source_value) in self
+            .transform_row
+            .iter_mut()
+            .zip(self.transform.row(target))
+            .zip(self.transform.row(source))
+        {
+            *output = if source_value.is_zero() {
+                target_value
+            } else {
+                checked_updates += 2;
+                target_value.try_sub(factor.try_mul(source_value)?)?
+            };
+        }
+
+        // Match the previous row-then-column congruence arithmetic. The
+        // diagonal sees the already-updated target/source entry.
         let row_diagonal = self.gram_row[target];
         let row_source = self.gram_row[source];
         self.gram_row[target] = if row_source.is_zero() {
@@ -465,15 +474,13 @@ impl<T: Int> State<T> {
             row_diagonal.try_sub(factor.try_mul(row_source)?)?
         };
 
-        for column in 0..n {
-            let value = self.gram_row[column];
-            self.gram.set(target, column, value);
-            if column != target {
-                self.gram.set(column, target, value);
-            }
-            self.transform
-                .set(target, column, self.transform_row[column]);
-        }
+        // No checked operation remains, so committing the preflighted rows and
+        // mirrored column cannot fail or expose a partial state.
+        self.gram.row_mut(target).copy_from_slice(&self.gram_row);
+        self.gram.copy_column_from_slice(target, &self.gram_row);
+        self.transform
+            .row_mut(target)
+            .copy_from_slice(&self.transform_row);
         Ok(checked_updates)
     }
 
@@ -647,9 +654,10 @@ fn deep_insertion_point<T: Int>(
 mod tests {
     #[cfg(feature = "internals")]
     use super::lll_profiled;
-    use super::{Delta, gauss, is_reduced, lll, lll_deep};
+    use super::{Delta, State, gauss, is_reduced, lll, lll_deep};
     use crate::basis::{Basis, Gram};
     use crate::error::LatticeError;
+    use crate::int::{Int, IntMatrix};
     use crate::named::{a_n, d_n, e8};
 
     #[test]
@@ -745,6 +753,51 @@ mod tests {
     fn gauss_requires_two_dimensions() {
         assert!(gauss(&a_n::<i64>(3).unwrap()).is_err());
     }
+    fn state_subtraction_matches_congruence<T: Int>() {
+        let entries = [5i8, 1, 1, 1, 4, 1, 1, 1, 3].map(T::from_i8);
+        let gram = Gram::from_rows(3, &entries).unwrap();
+        let factor = T::from_i8(2);
+        let mut state = State::new(&gram).unwrap();
+        state.subtract(2, 0, factor).unwrap();
+        let reduced = state.finish();
+
+        let mut transform = IntMatrix::identity(3).unwrap();
+        transform.row_sub_mul(2, 0, factor).unwrap();
+        let expected = transform
+            .mul(gram.as_matrix())
+            .unwrap()
+            .mul(&transform.transpose().unwrap())
+            .unwrap();
+        assert_eq!(reduced.gram.as_matrix(), &expected);
+        assert_eq!(reduced.transform, transform);
+    }
+
+    #[test]
+    fn state_subtraction_matches_exact_congruence_at_every_width() {
+        state_subtraction_matches_congruence::<i32>();
+        state_subtraction_matches_congruence::<i64>();
+        state_subtraction_matches_congruence::<i128>();
+    }
+
+    fn overflowing_state_subtraction_is_atomic<T: Int>(factor: T) {
+        let entries = [1i8, 0, 0, 1].map(T::from_i8);
+        let gram = Gram::from_rows(2, &entries).unwrap();
+        let mut state = State::new(&gram).unwrap();
+        let gram_before = state.gram.clone();
+        let transform_before = state.transform.clone();
+
+        assert!(state.subtract(1, 0, factor).is_err());
+        assert_eq!(state.gram, gram_before);
+        assert_eq!(state.transform, transform_before);
+    }
+
+    #[test]
+    fn overflowing_state_subtraction_is_atomic_at_every_width() {
+        overflowing_state_subtraction_is_atomic::<i32>(i32::MAX);
+        overflowing_state_subtraction_is_atomic::<i64>(i64::MAX);
+        overflowing_state_subtraction_is_atomic::<i128>(i128::MAX);
+    }
+
     #[cfg(feature = "internals")]
     #[test]
     fn profiled_quotient_counters_partition_checks() {

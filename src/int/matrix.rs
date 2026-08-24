@@ -140,6 +140,19 @@ impl<T: Int> IntMatrix<T> {
         &self.data[row * self.cols..(row + 1) * self.cols]
     }
 
+    pub(crate) fn row_mut(&mut self, row: usize) -> &mut [T] {
+        assert!(row < self.rows, "row index out of bounds");
+        &mut self.data[row * self.cols..(row + 1) * self.cols]
+    }
+
+    pub(crate) fn copy_column_from_slice(&mut self, col: usize, values: &[T]) {
+        assert!(col < self.cols, "column index out of bounds");
+        assert_eq!(values.len(), self.rows, "column length mismatch");
+        for (row, &value) in values.iter().enumerate() {
+            self.data[row * self.cols + col] = value;
+        }
+    }
+
     /// Borrows the whole buffer in row-major order.
     #[must_use]
     pub fn as_slice(&self) -> &[T] {

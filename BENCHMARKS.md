@@ -237,6 +237,46 @@ The median of three standard `fplll_compare` runs was `5.144/49.854/177.207 µs`
 at dimensions 8/16/24. This is the ordinary-LLL baseline for the contiguous
 transactional state-update pass.
 
+## Contiguous transactional state updates
+
+Command:
+
+```sh
+taskset -c 2 cargo bench --bench optimization --features internals
+taskset -c 2 cargo bench --bench fplll_compare
+```
+
+Measured 2026-08-24 against the committed observability baseline. Reduction now
+borrows validated contiguous source/target rows, preflights the Gram and
+transform updates into reusable scratch, commits complete target rows, and
+mirrors the Gram column through one validated helper. The checked expressions
+and diagonal update order are unchanged.
+
+| Dimension | Shear bits | Before | After | Reduction |
+| ---: | ---: | ---: | ---: | ---: |
+| 8 | 2 | 3.690 µs | 3.288 µs | 10.9% |
+| 8 | 4 | 4.577 µs | 4.416 µs | 3.5% |
+| 8 | 6 | 4.789 µs | 4.378 µs | 8.6% |
+| 16 | 2 | 17.897 µs | 16.744 µs | 6.4% |
+| 16 | 4 | 20.953 µs | 19.261 µs | 8.1% |
+| 16 | 6 | 21.785 µs | 20.039 µs | 8.0% |
+| 24 | 2 | 46.103 µs | 44.596 µs | 3.3% |
+| 24 | 4 | 50.049 µs | 47.829 µs | 4.4% |
+| 24 | 6 | 51.655 µs | 49.145 µs | 4.9% |
+
+All fingerprints and factorization, quotient, reduction, swap, iteration,
+Gram-copy, swap-term, and checked-update counts are unchanged. Width-generic
+tests compare the state update against an independently formed congruence at
+`i32`, `i64`, and `i128`; overflowing updates leave both persistent matrices
+unchanged.
+
+The median of three standard comparison runs changed from
+`5.144/49.854/177.207 µs` to `4.888/47.706/169.351 µs`, reductions of
+5.0%, 4.3%, and 4.4%. In the post-change profile, `size_reduce_pair` falls from
+38.0% to 32.4% of sampled cycles; `Gso::swap_adjacent` is the next isolated
+update target. Generated benchmark assembly keeps remaining bounds failures in
+cold panic blocks rather than the contiguous arithmetic loops.
+
 ## Comparison target selection
 
 fplll remains the useful general-CVP target: its in-process public API exposes
@@ -328,14 +368,15 @@ reduces in place. Input construction is outside both timers.
 
 | Dimension | `lattica` median | fplll median | Faster library |
 | ---: | ---: | ---: | ---: |
-| 8 | 4.856 µs | 20.829 µs | `lattica` 4.29x |
-| 16 | 50.970 µs | 46.171 µs | fplll 1.10x |
-| 24 | 182.916 µs | 164.156 µs | fplll 1.11x |
+| 8 | 4.888 µs | 20.829 µs | `lattica` 4.26x |
+| 16 | 47.706 µs | 46.171 µs | fplll 1.03x |
+| 24 | 169.351 µs | 164.156 µs | fplll 1.03x |
 
-Incremental exact GSO updates, lazy reduction, and the exact zero-quotient
-filter removed the earlier orders-of-magnitude gap and narrowed the remaining
-comparison. fplll remains faster at dimensions 16 and 24, while `lattica` is
-faster at dimension 8. The comparison is deliberately not called
+Incremental exact GSO updates, lazy reduction, the exact zero-quotient filter,
+and contiguous transactional state updates removed the earlier
+orders-of-magnitude gap and narrowed the remaining comparison. fplll remains
+slightly faster at dimensions 16 and 24, while `lattica` is faster at
+dimension 8. The comparison is deliberately not called
 contract-equivalent: fplll reduces an ambient basis without returning the
 transform, while `lattica` reduces a Gram matrix and always returns it.
 

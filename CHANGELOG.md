@@ -21,6 +21,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   zero proofs and checked divisions and counts later GSO terms touched by
   adjacent swaps. The optimization harness times ordinary `lll` separately
   from its one profiled counter sample.
+- Transactional LLL Gram and transform updates use validated contiguous rows
+  for preflight and commit while preserving checked arithmetic order. The nine
+  reduction geometries improve by 3.3% to 10.9%, with unchanged certificates
+  and operation counts.
 
 ## [0.2.0]
 
