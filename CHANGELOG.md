@@ -46,6 +46,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   calls drop from nine allocations to exactly two (the returned matrices) and
   improve repeated-call latency by up to 12.8%, with results bit-identical to
   the one-shot functions and unchanged one-shot behavior.
+- Unstable benchmarking now profiles exact short-vector enumeration: node,
+  leaf, tail-term, and direct-norm counters over a named-lattice corpus whose
+  vector counts are checked against closed-form shell formulas before any
+  timing. The harness reports per-call allocations through its counting
+  allocator.
 
 ## [0.2.0]
 

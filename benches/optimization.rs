@@ -1,16 +1,58 @@
 //! Workload-separated optimization measurements and correctness fingerprints.
 
+#![allow(unsafe_code)]
+
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use lattica::Basis;
 use lattica::basis::Gram;
 use lattica::gso::Gso;
 use lattica::int::{Int, IntMatrix, adjugate, hnf, hnf_mod_det, invariant_factors};
+use lattica::named::{a_n, d_n, e8, zn};
 use lattica::reduce::{
     Delta, Reduced, ReductionStats, ReductionWorkspace, is_reduced, lll, lll_deep,
     lll_deep_profiled, lll_profiled,
 };
+use lattica::shortvec::{DEFAULT_NODE_BUDGET, for_each_short, for_each_short_profiled};
+
+static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+
+struct Counting;
+
+// SAFETY: every method forwards to `System` unchanged; the only addition is an
+// atomic increment that allocates nothing itself.
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        unsafe { System.realloc(ptr, layout, new_size) }
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        unsafe { System.alloc_zeroed(layout) }
+    }
+}
+
+#[global_allocator]
+static GLOBAL: Counting = Counting;
+
+fn allocations_during<F: FnOnce()>(body: F) -> usize {
+    let before = ALLOCATIONS.load(Ordering::Relaxed);
+    body();
+    ALLOCATIONS.load(Ordering::Relaxed) - before
+}
 
 const DIMENSIONS: [usize; 3] = [8, 16, 24];
 const SAMPLES: usize = 11;
@@ -460,9 +502,109 @@ fn benchmark_algebra() {
     }
 }
 
+/// Combinations of `n` taken four at a time.
+fn choose_four(n: usize) -> u64 {
+    let n = u64::try_from(n).unwrap();
+    n * (n - 1) * (n - 2) * (n - 3) / 24
+}
+
+/// One enumeration corpus cell: prove the closed-form shell count, then time
+/// and count the same workload through the public one-shot path.
+///
+/// The oracles are the classical shell formulas: `Z^n` at radius two holds
+/// exactly its axis vectors and their pairwise sums; `A_n` at radius two is
+/// its root system; `D_n` at radius four adds the short weight-two and
+/// weight-four layers to its roots.
+fn run_enumeration_cell(gram: &Gram<i128>, radius_sq: i128, expected_total: u64, name: &str) {
+    let dimension = gram.dim();
+    let fingerprint = corpus_fingerprint(std::slice::from_ref(gram));
+
+    let mut counted = 0u64;
+    let (_, stats) = for_each_short_profiled(gram, radius_sq, DEFAULT_NODE_BUDGET, |_, _| {
+        counted += 1;
+    })
+    .unwrap();
+    assert_eq!(counted, expected_total, "{name}: shell-count oracle");
+    assert_eq!(
+        stats.leaves,
+        expected_total + 1,
+        "{name}: one leaf per emitted vector plus the zero assignment"
+    );
+    assert_eq!(
+        stats.direct_norms, expected_total,
+        "{name}: one direct norm per emitted vector"
+    );
+
+    let elapsed = measured(|| {
+        black_box(for_each_short(
+            black_box(gram),
+            radius_sq,
+            DEFAULT_NODE_BUDGET,
+            |_, _| {},
+        ))
+        .unwrap();
+    });
+    let allocations = allocations_during(|| {
+        black_box(for_each_short(
+            black_box(gram),
+            radius_sq,
+            DEFAULT_NODE_BUDGET,
+            |_, _| {},
+        ))
+        .unwrap();
+    });
+
+    let nanoseconds = elapsed.as_secs_f64() * 1e9;
+    for (metric, value) in [
+        ("enum_ns", format!("{nanoseconds:.2}")),
+        ("enum_total", expected_total.to_string()),
+        ("enum_nodes", stats.nodes.to_string()),
+        ("enum_leaves", stats.leaves.to_string()),
+        ("enum_tail_terms", stats.tail_terms.to_string()),
+        ("enum_direct_norms", stats.direct_norms.to_string()),
+        ("enum_allocations", allocations.to_string()),
+    ] {
+        println!("{metric},{dimension},{name},{value},{fingerprint}");
+    }
+}
+
+fn benchmark_enumeration() {
+    for dimension in DIMENSIONS {
+        let cells: [(&str, Gram<i128>, i128, u64); 3] = [
+            (
+                "zn_radius_2",
+                zn(dimension).unwrap(),
+                2,
+                2 * u64::try_from(dimension * dimension).unwrap(),
+            ),
+            (
+                "a_n_radius_2",
+                a_n(dimension).unwrap(),
+                2,
+                u64::try_from(dimension * (dimension + 1)).unwrap(),
+            ),
+            (
+                "d_n_radius_4",
+                d_n(dimension).unwrap(),
+                4,
+                2 * u64::try_from(dimension * (dimension - 1)).unwrap()
+                    + 2 * u64::try_from(dimension).unwrap()
+                    + 16 * choose_four(dimension),
+            ),
+        ];
+        for (name, gram, radius_sq, expected) in cells {
+            run_enumeration_cell(&gram, radius_sq, expected, name);
+        }
+    }
+
+    // E8's root shell: 240 vectors, recovered rather than tabulated.
+    run_enumeration_cell(&e8::<i128>().unwrap(), 2, 240, "e8_radius_2");
+}
+
 fn main() {
     benchmark_lll();
     benchmark_deep_lll();
     benchmark_algebra();
     benchmark_factorization();
+    benchmark_enumeration();
 }

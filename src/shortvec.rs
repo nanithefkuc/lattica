@@ -100,6 +100,110 @@ where
     T: Int,
     F: FnMut(&[i128], i128),
 {
+    for_each_short_observed(gram, radius_sq, budget, visit, &mut Unobserved)
+}
+
+/// Enumerates while returning unstable benchmark counters.
+///
+/// Available only with `internals`; counters are not a compatibility promise.
+/// The returned node count matches [`for_each_short`]; allocation counts are
+/// measured externally by the benchmark harness, not here.
+///
+/// # Errors
+///
+/// As [`for_each_short`].
+#[cfg(feature = "internals")]
+pub fn for_each_short_profiled<T, F>(
+    gram: &Gram<T>,
+    radius_sq: i128,
+    budget: u64,
+    visit: F,
+) -> Result<(u64, EnumerationStats), DecodeError>
+where
+    T: Int,
+    F: FnMut(&[i128], i128),
+{
+    let mut stats = EnumerationStats::default();
+    let nodes = for_each_short_observed(gram, radius_sq, budget, visit, &mut stats)?;
+    Ok((nodes, stats))
+}
+
+trait EnumerationObserver {
+    fn node(&mut self) {}
+    fn leaf(&mut self) {}
+    fn tail_term(&mut self) {}
+    fn direct_norm(&mut self) {}
+}
+
+struct Unobserved;
+
+impl EnumerationObserver for Unobserved {}
+
+impl<O: EnumerationObserver> EnumerationObserver for &mut O {
+    fn node(&mut self) {
+        (**self).node()
+    }
+
+    fn leaf(&mut self) {
+        (**self).leaf()
+    }
+
+    fn tail_term(&mut self) {
+        (**self).tail_term()
+    }
+
+    fn direct_norm(&mut self) {
+        (**self).direct_norm()
+    }
+}
+
+/// Internal operation counters for exact short-vector enumeration benchmarks.
+///
+/// Available only with `internals`; counters are not a compatibility promise.
+#[cfg(feature = "internals")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EnumerationStats {
+    /// Depth-first nodes visited: every [`Walk::descend`](struct@Walk) entry.
+    pub nodes: u64,
+    /// Complete coordinate assignments evaluated, including the all-zero one.
+    pub leaves: u64,
+    /// Exact multiply-add terms formed by per-node tail sums.
+    pub tail_terms: u64,
+    /// Direct `c G cᵀ` recomputations at emitted vectors.
+    pub direct_norms: u64,
+}
+
+#[cfg(feature = "internals")]
+impl EnumerationObserver for EnumerationStats {
+    fn node(&mut self) {
+        self.nodes += 1;
+    }
+
+    fn leaf(&mut self) {
+        self.leaves += 1;
+    }
+
+    fn tail_term(&mut self) {
+        self.tail_terms += 1;
+    }
+
+    fn direct_norm(&mut self) {
+        self.direct_norms += 1;
+    }
+}
+
+fn for_each_short_observed<T, F, O>(
+    gram: &Gram<T>,
+    radius_sq: i128,
+    budget: u64,
+    visit: F,
+    observer: &mut O,
+) -> Result<u64, DecodeError>
+where
+    T: Int,
+    F: FnMut(&[i128], i128),
+    O: EnumerationObserver,
+{
     let n = gram.dim();
     if n == 0 || radius_sq < 0 {
         return Ok(0);
@@ -121,6 +225,7 @@ where
         coords: vec![0i128; n],
         budget,
         nodes: 0,
+        observer,
         visit,
     };
     walk.descend(n, 0)?;
@@ -184,6 +289,73 @@ pub fn census<T: Int>(gram: &Gram<T>, budget: u64) -> Result<Census<T>, DecodeEr
     })
 }
 
+/// Counts short vectors while returning unstable benchmark counters.
+///
+/// Available only with `internals`; counters are not a compatibility promise.
+/// The [`Census`] matches [`census`] exactly on the same input.
+///
+/// # Errors
+///
+/// As [`census`].
+#[cfg(feature = "internals")]
+pub fn census_profiled<T: Int>(
+    gram: &Gram<T>,
+    budget: u64,
+) -> Result<(Census<T>, EnumerationStats), DecodeError> {
+    let n = gram.dim();
+    if n == 0 {
+        return Ok((
+            Census {
+                min_norm_sq: None,
+                kissing_number: 0,
+                total: 0,
+                nodes: 0,
+            },
+            EnumerationStats::default(),
+        ));
+    }
+
+    let radius_sq = (0..n)
+        .map(|i| gram.entry(i, i).widen())
+        .min()
+        .expect("dimension is nonzero");
+
+    let mut best = i128::MAX;
+    let mut at_best = 0u64;
+    let mut total = 0u64;
+    let mut stats = EnumerationStats::default();
+    let nodes = for_each_short_observed(
+        gram,
+        radius_sq,
+        budget,
+        |_, norm_sq| {
+            total += 1;
+            if norm_sq < best {
+                best = norm_sq;
+                at_best = 1;
+            } else if norm_sq == best {
+                at_best += 1;
+            }
+        },
+        &mut stats,
+    )?;
+
+    let min_norm_sq = if total == 0 {
+        None
+    } else {
+        Some(T::narrow(best)?)
+    };
+    Ok((
+        Census {
+            min_norm_sq,
+            kissing_number: if total == 0 { 0 } else { at_best },
+            total,
+            nodes,
+        },
+        stats,
+    ))
+}
+
 /// The fraction-free triangular factorization and its cleared denominators.
 struct Factorization {
     /// Bareiss upper-triangular form, row-major, `n` by `n`.
@@ -244,7 +416,7 @@ impl Factorization {
 }
 
 /// Depth-first traversal state.
-struct Walk<'a, F> {
+struct Walk<'a, F, O> {
     f: &'a Factorization,
     gram: &'a [i128],
     n: usize,
@@ -252,22 +424,26 @@ struct Walk<'a, F> {
     coords: Vec<i128>,
     budget: u64,
     nodes: u64,
+    observer: O,
     visit: F,
 }
 
-impl<F: FnMut(&[i128], i128)> Walk<'_, F> {
+impl<F: FnMut(&[i128], i128), O: EnumerationObserver> Walk<'_, F, O> {
     /// Chooses coordinate `remaining - 1`, with `acc` the scaled partial norm
     /// contributed by the coordinates already fixed.
     fn descend(&mut self, remaining: usize, acc: i128) -> Result<(), DecodeError> {
         self.nodes += 1;
+        self.observer.node();
         if self.nodes > self.budget {
             return Err(DecodeError::EnumerationBudget { nodes: self.nodes });
         }
 
         if remaining == 0 {
+            self.observer.leaf();
             if self.coords.iter().all(|&c| c == 0) {
                 return Ok(());
             }
+            self.observer.direct_norm();
             let norm_sq = self.exact_norm()?;
             (self.visit)(&self.coords, norm_sq);
             return Ok(());
@@ -281,6 +457,7 @@ impl<F: FnMut(&[i128], i128)> Walk<'_, F> {
         let mut tail = 0i128;
         for j in k + 1..n {
             if self.coords[j] != 0 {
+                self.observer.tail_term();
                 tail = add(tail, mul(self.f.upper[k * n + j], self.coords[j])?)?;
             }
         }
@@ -458,5 +635,32 @@ mod tests {
         let mut seen = 0;
         for_each_short(&g, 0, DEFAULT_NODE_BUDGET, |_, _| seen += 1).unwrap();
         assert_eq!(seen, 0);
+    }
+
+    #[cfg(feature = "internals")]
+    #[test]
+    fn profiled_counters_partition_the_walk() {
+        use super::census_profiled;
+        use crate::named::{e8, zn};
+
+        // Z^4's census runs at the minimal diagonal, radius one: exactly the
+        // axis vectors ±e_i survive.
+        let g = zn::<i64>(4).unwrap();
+        let (census, stats) = census_profiled(&g, DEFAULT_NODE_BUDGET).unwrap();
+        assert_eq!(census.total, 8);
+        assert_eq!(census.kissing_number, 8);
+        assert_eq!(census.nodes, stats.nodes);
+        // One leaf per emitted vector plus the rejected all-zero assignment,
+        // and one direct norm recomputation per emitted vector.
+        assert_eq!(stats.leaves, census.total + 1);
+        assert_eq!(stats.direct_norms, census.total);
+        assert!(stats.nodes > stats.leaves);
+        assert!(stats.tail_terms > 0);
+
+        // E8's root shell: the published kissing number, recovered.
+        let (census, stats) = census_profiled(&e8::<i64>().unwrap(), DEFAULT_NODE_BUDGET).unwrap();
+        assert_eq!(census.kissing_number, 240);
+        assert_eq!(stats.direct_norms, census.total);
+        assert_eq!(stats.leaves, census.total + 1);
     }
 }

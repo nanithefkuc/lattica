@@ -512,6 +512,48 @@ re-measured under alternated-order interleaving; its medians moved within this
 host's run-to-run dispersion for identical binaries, which is a noise
 boundary rather than a measured regression.
 
+## Enumeration observability baseline
+
+Command:
+
+```sh
+taskset -c 2 cargo bench --bench optimization --features internals
+```
+
+Measured 2026-08-24 on the same machine and toolchain. The enumeration corpus
+times the public one-shot path over named lattices at radii whose vector
+counts have closed-form oracles, recovered by the enumeration itself before
+anything is timed: `Z^n` at radius two holds exactly its `2n²` axis vectors
+and pairwise sums, `A_n` at radius two is its `n(n+1)`-element root system,
+`D_n` at radius four adds the weight-two and weight-four layers to its roots,
+and E8 at radius two recovers its published kissing number of 240.
+
+Unstable counters come from one untimed profiled pass per cell. Direct norms
+are the `O(n²)` `c G cᵀ` recomputations at emitted vectors; tail terms are
+the exact multiply-adds formed by the per-node suffix sums.
+
+| Dimension | Geometry | Total | Nodes | Tail terms | Direct norms | Time |
+| ---: | :--- | ---: | ---: | ---: | ---: | ---: |
+| 8 | zn_radius_2 | 128 | 417 | 504 | 128 | 15.3 us |
+| 8 | a_n_radius_2 | 72 | 249 | 420 | 72 | 12.1 us |
+| 8 | d_n_radius_4 | 1,248 | 2,783 | 6,704 | 1,248 | 196.0 us |
+| 8 | e8_radius_2 | 240 | 751 | 2,170 | 240 | 53.4 us |
+| 16 | zn_radius_2 | 512 | 3,009 | 4,720 | 512 | 125.6 us |
+| 16 | a_n_radius_2 | 272 | 1,649 | 6,120 | 272 | 125.7 us |
+| 16 | d_n_radius_4 | 29,632 | 107,969 | 683,276 | 29,632 | 15.9 ms |
+| 24 | zn_radius_2 | 1,152 | 9,825 | 16,744 | 1,152 | 571.8 us |
+| 24 | a_n_radius_2 | 600 | 5,225 | 29,900 | 600 | 537.0 us |
+| 24 | d_n_radius_4 | 171,168 | 910,521 | 9,594,188 | 171,168 | 181.1 ms |
+
+Allocations measure 9 to 13 per call across the corpus (factorization
+buffers, widened Gram, coordinates); the counting allocator lives in the
+harness because internal counters cannot observe allocation. Two costs
+dominate and both are recomputation: the per-node tail dot product grows to
+9.6 million terms at dimension 24, and the per-vector direct norm
+recomputation performs roughly `n²` operations per emitted vector — about
+98 million at `d_n_radius_4`, which is most of that cell's wall time. These
+are the measurement targets for tail caching and carried norms.
+
 ## Comparison target selection
 
 fplll remains the useful general-CVP target: its in-process public API exposes
