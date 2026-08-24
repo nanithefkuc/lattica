@@ -198,6 +198,79 @@ pub fn lll_deep_profiled<T: Int>(
     Ok((reduced, stats))
 }
 
+/// A prepared reduction workspace for repeated same-dimension workloads.
+///
+/// One-shot [`lll`] allocates its Gram copy, transform, and factorization
+/// buffers on every call. This type allocates them once and reuses them for
+/// every reduction of the same dimension, so a caller that reduces many bases
+/// of one shape pays setup once. Results are identical to [`lll`] and
+/// [`lll_deep`] on the same input: the descent is the same code over freshly
+/// refactored state.
+///
+/// Each successful call returns fresh output matrices; the only per-call
+/// allocations are those two results. A rejected call leaves the workspace
+/// ready for reuse: the next call copies its input in completely before any
+/// arithmetic runs.
+///
+/// Available only with `internals`; not a compatibility promise.
+#[cfg(feature = "internals")]
+pub struct ReductionWorkspace<T: Int> {
+    buffers: Buffers<T>,
+}
+
+#[cfg(feature = "internals")]
+impl<T: Int> ReductionWorkspace<T> {
+    /// Allocates a workspace for dimension `dimension`.
+    ///
+    /// # Errors
+    ///
+    /// [`ReduceError::Range`] with [`RangeError::Dimension`] if `dimension`
+    /// exceeds the crate's maximum matrix dimension.
+    pub fn new(dimension: usize) -> Result<Self, ReduceError> {
+        Ok(Self {
+            buffers: Buffers::new(dimension)?,
+        })
+    }
+
+    /// The dimension this workspace was sized for.
+    #[must_use]
+    pub const fn dim(&self) -> usize {
+        self.buffers.state.gram.rows()
+    }
+
+    /// Ordinary LLL over reused buffers, identical to [`lll`] on the input.
+    ///
+    /// # Errors
+    ///
+    /// [`ReduceError::Range`] with [`RangeError::Shape`] if `gram.dim()` does
+    /// not equal [`Self::dim`]; otherwise as [`lll`].
+    pub fn reduce(&mut self, gram: &Gram<T>, delta: Delta) -> Result<Reduced<T>, ReduceError> {
+        self.run(gram, delta, false)
+    }
+
+    /// Deep-insertion LLL over reused buffers, identical to [`lll_deep`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::reduce`].
+    pub fn reduce_deep(&mut self, gram: &Gram<T>, delta: Delta) -> Result<Reduced<T>, ReduceError> {
+        self.run(gram, delta, true)
+    }
+
+    fn run(&mut self, gram: &Gram<T>, delta: Delta, deep: bool) -> Result<Reduced<T>, ReduceError> {
+        if gram.dim() != self.dim() {
+            return Err(RangeError::Shape {
+                expected: self.dim(),
+                found: gram.dim(),
+            }
+            .into());
+        }
+        self.buffers
+            .restart_and_run(gram, delta, deep, &mut Unobserved)?;
+        Ok(self.buffers.state.finish_cloned())
+    }
+}
+
 /// Lagrange–Gauss reduction of a rank-two lattice.
 ///
 /// Returns a basis of two shortest possible vectors: in the plane, unlike in
@@ -430,18 +503,35 @@ struct State<T: Int> {
 }
 
 impl<T: Int> State<T> {
-    fn new(gram: &Gram<T>) -> Result<Self, ReduceError> {
-        let n = gram.dim();
+    /// Allocates empty state for one dimension.
+    fn empty(dimension: usize) -> Result<Self, ReduceError> {
         Ok(Self {
-            gram: gram.as_matrix().clone(),
-            transform: IntMatrix::identity(n)?,
-            gram_row: vec![T::ZERO; n],
-            transform_row: vec![T::ZERO; n],
+            gram: IntMatrix::zeros(dimension, dimension)?,
+            transform: IntMatrix::identity(dimension)?,
+            gram_row: vec![T::ZERO; dimension],
+            transform_row: vec![T::ZERO; dimension],
         })
     }
 
-    fn gso(&self) -> Result<Gso<T>, ReduceError> {
-        Gso::from_symmetric_matrix(&self.gram)
+    fn new(gram: &Gram<T>) -> Result<Self, ReduceError> {
+        let mut state = Self::empty(gram.dim())?;
+        state.reset(gram);
+        Ok(state)
+    }
+
+    /// Copies `gram` in and resets the transform to identity, keeping every
+    /// allocation. The row scratch needs no reset: each [`Self::subtract`]
+    /// overwrites it completely before reading it.
+    fn reset(&mut self, gram: &Gram<T>) {
+        debug_assert_eq!(self.gram.rows(), gram.dim());
+        self.gram
+            .as_mut_slice()
+            .copy_from_slice(gram.as_matrix().as_slice());
+        for row in 0..self.transform.rows() {
+            let line = self.transform.row_mut(row);
+            line.fill(T::ZERO);
+            line[row] = T::ONE;
+        }
     }
 
     fn swap(&mut self, i: usize, j: usize) {
@@ -525,6 +615,52 @@ impl<T: Int> State<T> {
             transform: self.transform,
         }
     }
+
+    /// Materializes the result without consuming the buffers, so a prepared
+    /// workspace keeps them for the next reduction.
+    #[cfg(feature = "internals")]
+    fn finish_cloned(&self) -> Reduced<T> {
+        Reduced {
+            gram: Gram::new(self.gram.clone()).expect("reduction preserves symmetry"),
+            transform: self.transform.clone(),
+        }
+    }
+}
+
+/// Reusable reduction storage: the transactional Gram-plus-transform state and
+/// the exact factorization, sized for one dimension.
+#[cfg(feature = "internals")]
+struct Buffers<T: Int> {
+    state: State<T>,
+    gso: Gso<T>,
+}
+
+#[cfg(feature = "internals")]
+impl<T: Int> Buffers<T> {
+    fn new(dimension: usize) -> Result<Self, ReduceError> {
+        Ok(Self {
+            state: State::empty(dimension)?,
+            gso: Gso::empty(dimension)?,
+        })
+    }
+
+    /// Copies `gram` in, refactors from scratch over the reused buffers, and
+    /// runs one full descent.
+    fn restart_and_run<O: ReductionObserver>(
+        &mut self,
+        gram: &Gram<T>,
+        delta: Delta,
+        deep: bool,
+        observer: &mut O,
+    ) -> Result<(), ReduceError> {
+        let n = gram.dim();
+        self.state.reset(gram);
+        observer.gram_copy();
+        self.gso.refactor_from_symmetric_matrix(&self.state.gram)?;
+        observer.factorization(n);
+        let Self { state, gso } = &mut *self;
+        run_descent(state, gso, delta, deep, observer)
+    }
 }
 
 fn reduce_with<T: Int>(
@@ -559,19 +695,23 @@ fn size_reduce_pair<T: Int, O: ReductionObserver>(
     Ok(())
 }
 
-fn reduce_observed<T: Int, O: ReductionObserver>(
-    gram: &Gram<T>,
+/// The LLL descent over prepared state: lazy size reduction, the Lovász test,
+/// adjacent swaps, and, when `deep` is set, full deep insertion.
+///
+/// Inlined into both callers so each keeps its measured one-shot codegen;
+/// a previous out-of-line placement of this loop measurably regressed the
+/// public path.
+#[inline]
+fn run_descent<T: Int, O: ReductionObserver>(
+    state: &mut State<T>,
+    gso: &mut Gso<T>,
     delta: Delta,
     deep: bool,
     observer: &mut O,
-) -> Result<Reduced<T>, ReduceError> {
-    let n = gram.dim();
-    let mut state = State::new(gram)?;
-    observer.gram_copy();
-    let mut gso = state.gso()?;
-    observer.factorization(n);
+) -> Result<(), ReduceError> {
+    let n = state.gram.rows();
     if n < 2 {
-        return Ok(state.finish());
+        return Ok(());
     }
     let mut steps = 0u64;
     let mut k = 1usize;
@@ -582,10 +722,10 @@ fn reduce_observed<T: Int, O: ReductionObserver>(
         if deep {
             // Deep insertion needs every projected coefficient of b_k.
             for j in (0..k).rev() {
-                size_reduce_pair(&mut state, &mut gso, k, j, observer)?;
+                size_reduce_pair(state, gso, k, j, observer)?;
             }
-            if let Some(target) = deep_insertion_point(&gso, k, delta, observer)? {
-                state.rotate(k, target, &mut gso)?;
+            if let Some(target) = deep_insertion_point(gso, k, delta, observer)? {
+                state.rotate(k, target, gso)?;
                 observer.deep_insertion();
                 let mut checked_updates = 0u64;
                 let mut update_terms = 0u64;
@@ -609,10 +749,10 @@ fn reduce_observed<T: Int, O: ReductionObserver>(
         // The Lovász test only depends on μ[k][k-1]. Delay reductions against
         // earlier vectors until the test passes, avoiding work that a swap
         // would immediately invalidate.
-        size_reduce_pair(&mut state, &mut gso, k, k - 1, observer)?;
-        if lovasz_holds(&gso, k, delta)? {
+        size_reduce_pair(state, gso, k, k - 1, observer)?;
+        if lovasz_holds(gso, k, delta)? {
             for j in (0..k - 1).rev() {
-                size_reduce_pair(&mut state, &mut gso, k, j, observer)?;
+                size_reduce_pair(state, gso, k, j, observer)?;
             }
             k += 1;
         } else {
@@ -623,6 +763,21 @@ fn reduce_observed<T: Int, O: ReductionObserver>(
             k = (k - 1).max(1);
         }
     }
+    Ok(())
+}
+
+fn reduce_observed<T: Int, O: ReductionObserver>(
+    gram: &Gram<T>,
+    delta: Delta,
+    deep: bool,
+    observer: &mut O,
+) -> Result<Reduced<T>, ReduceError> {
+    let n = gram.dim();
+    let mut state = State::new(gram)?;
+    observer.gram_copy();
+    let mut gso = Gso::from_symmetric_matrix(&state.gram)?;
+    observer.factorization(n);
+    run_descent(&mut state, &mut gso, delta, deep, observer)?;
     Ok(state.finish())
 }
 
@@ -703,7 +858,7 @@ mod tests {
         lll_deep, narrow,
     };
     #[cfg(feature = "internals")]
-    use super::{lll_deep_profiled, lll_profiled};
+    use super::{ReductionWorkspace, lll_deep_profiled, lll_profiled};
     use crate::basis::{Basis, Gram};
     use crate::error::{LatticeError, RangeError};
     use crate::gso::Gso;
@@ -965,5 +1120,126 @@ mod tests {
         );
         assert!(stats.deep_max_denominator_bits > 0);
         assert!(stats.deep_max_scale_bits >= stats.deep_max_denominator_bits);
+    }
+
+    /// A small deterministic skewed positive-definite Gram matrix: a unit
+    /// lower-triangular basis with bounded entries, so it is always full rank.
+    #[cfg(feature = "internals")]
+    fn skewed_gram<T: Int>(seed: u64, n: usize) -> Option<Gram<T>> {
+        let mut rng = seed;
+        let mut entries = vec![T::ZERO; n * n];
+        for row in 0..n {
+            entries[row * n + row] = T::ONE;
+            for column in 0..row {
+                rng ^= rng << 13;
+                rng ^= rng >> 7;
+                rng ^= rng << 17;
+                let value = i8::try_from(rng % 7).ok()? - 3;
+                entries[row * n + column] = T::from_i8(value);
+            }
+        }
+        let basis = Basis::from_rows(n, n, &entries).ok()?;
+        let gram = basis.gram().ok()?;
+        if Gso::new(&gram).is_err() {
+            return None;
+        }
+        Some(gram)
+    }
+
+    #[cfg(feature = "internals")]
+    fn prepared_matches_one_shot<T: Int>() {
+        // One workspace reused across every dimension-matched input, exactly
+        // the repeated-caller shape it exists for. Outputs must equal the
+        // one-shot functions bit for bit: same descent, freshly refactored
+        // state each call.
+        for n in [1, 2, 4, 5, 7] {
+            let mut workspace = ReductionWorkspace::<T>::new(n).unwrap();
+            assert_eq!(workspace.dim(), n);
+            for case in 0..16u64 {
+                let seed = 0x57D2_6B00 ^ (case << 8) ^ u64::try_from(n).unwrap();
+                let Some(gram) = skewed_gram::<T>(seed, n) else {
+                    continue;
+                };
+                for delta in [Delta::LLL, Delta::STRONG] {
+                    assert_eq!(
+                        workspace.reduce(&gram, delta).unwrap(),
+                        lll(&gram, delta).unwrap()
+                    );
+                    assert_eq!(
+                        workspace.reduce_deep(&gram, delta).unwrap(),
+                        lll_deep(&gram, delta).unwrap()
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "internals")]
+    #[test]
+    fn prepared_workspace_matches_one_shot_at_every_width() {
+        prepared_matches_one_shot::<i32>();
+        prepared_matches_one_shot::<i64>();
+        prepared_matches_one_shot::<i128>();
+    }
+
+    #[cfg(feature = "internals")]
+    fn rejected_calls_leave_the_workspace_reusable<T: Int>() {
+        // Dimensions beyond the crate maximum are refused at allocation.
+        assert!(ReductionWorkspace::<T>::new(crate::int::MAX_DIM + 1).is_err());
+
+        let mut workspace = ReductionWorkspace::<T>::new(3).unwrap();
+        let good = skewed_gram::<T>(0x5EED_0001, 3).unwrap();
+
+        // A dimension mismatch is rejected before any buffer is touched...
+        let wrong_dim = Gram::<T>::from_rows(2, &[1, 0, 0, 1].map(T::from_i8)).unwrap();
+        assert!(workspace.reduce(&wrong_dim, Delta::LLL).is_err());
+        // ...and a form that is not positive definite fails during
+        // refactorization with the factorization half-written. The next call
+        // copies its input in completely, so both must reduce exactly.
+        let indefinite =
+            Gram::<T>::from_rows(3, &[1, 2, 0, 2, 1, 0, 0, 0, 1].map(T::from_i8)).unwrap();
+        assert!(workspace.reduce(&indefinite, Delta::LLL).is_err());
+
+        // Entries near the width limit overflow the Bareiss intermediates on
+        // every width.
+        let big = T::narrow(1i128 << (T::WIDTH_BITS - 2)).unwrap();
+        let huge = Gram::<T>::from_rows(2, &[big, big, big, big]).unwrap();
+        let mut overflowing = ReductionWorkspace::<T>::new(2).unwrap();
+        assert!(overflowing.reduce(&huge, Delta::LLL).is_err());
+
+        // Every rejected path above still leaves a correct workspace behind.
+        let small_good = skewed_gram::<T>(0x5EED_0002, 2).unwrap();
+        assert_eq!(
+            overflowing.reduce(&small_good, Delta::LLL).unwrap(),
+            lll(&small_good, Delta::LLL).unwrap()
+        );
+        assert_eq!(
+            workspace.reduce(&good, Delta::LLL).unwrap(),
+            lll(&good, Delta::LLL).unwrap()
+        );
+
+        // A workspace cannot be resized by calling with another dimension.
+        let wrong_size = Gram::<T>::from_rows(
+            4,
+            &[1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1].map(T::from_i8),
+        )
+        .unwrap();
+        assert_eq!(
+            workspace.reduce(&wrong_size, Delta::LLL),
+            Err(crate::error::ReduceError::Range(
+                crate::error::RangeError::Shape {
+                    expected: 3,
+                    found: 4,
+                }
+            ))
+        );
+    }
+
+    #[cfg(feature = "internals")]
+    #[test]
+    fn rejected_calls_leave_the_workspace_reusable_at_every_width() {
+        rejected_calls_leave_the_workspace_reusable::<i32>();
+        rejected_calls_leave_the_workspace_reusable::<i64>();
+        rejected_calls_leave_the_workspace_reusable::<i128>();
     }
 }

@@ -80,16 +80,27 @@ impl<T: Int> Gso<T> {
     /// Reduction keeps symmetry by construction and deliberately validates it
     /// only when materializing the public result.
     pub(crate) fn from_symmetric_matrix(matrix: &IntMatrix<T>) -> Result<Self, ReduceError> {
-        let n = matrix.rows();
-        debug_assert_eq!(n, matrix.cols());
-        let mut gso = Self {
-            n,
-            upper: vec![T::ZERO; n * n],
-            minors: vec![T::ZERO; n + 1],
-            update: vec![T::ZERO; 2 * n],
-        };
+        let mut gso = Self::empty(matrix.rows())?;
         gso.refactor_from_symmetric_matrix(matrix)?;
         Ok(gso)
+    }
+
+    /// Allocates empty factorization storage for one dimension, ready for
+    /// [`Self::refactor_from_symmetric_matrix`].
+    pub(crate) fn empty(dimension: usize) -> Result<Self, ReduceError> {
+        if dimension > crate::int::MAX_DIM {
+            return Err(RangeError::Dimension {
+                requested: dimension,
+                max: crate::int::MAX_DIM,
+            }
+            .into());
+        }
+        Ok(Self {
+            n: dimension,
+            upper: vec![T::ZERO; dimension * dimension],
+            minors: vec![T::ZERO; dimension + 1],
+            update: vec![T::ZERO; 2 * dimension],
+        })
     }
 
     /// Reuses this factorization's buffers for another matrix of the same

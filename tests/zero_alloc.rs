@@ -121,3 +121,72 @@ fn materializing_enumerations_allocate_as_promised() {
     });
     assert!(census_allocations > 0, "cold exact census did not allocate");
 }
+
+/// A deterministic skewed positive-definite Gram matrix of one dimension.
+#[cfg(feature = "internals")]
+fn skewed_gram(dimension: usize) -> lattica::basis::Gram<i64> {
+    let mut rng = 0x5EED_5EED_0000u64 ^ u64::try_from(dimension).unwrap();
+    let mut entries = vec![0i64; dimension * dimension];
+    for row in 0..dimension {
+        entries[row * dimension + row] = 1;
+        for column in 0..row {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            entries[row * dimension + column] = i64::try_from(rng % 7).unwrap() - 3;
+        }
+    }
+    lattica::Basis::from_rows(dimension, dimension, &entries)
+        .unwrap()
+        .gram()
+        .unwrap()
+}
+
+#[test]
+#[cfg(feature = "internals")]
+fn prepared_reduction_allocates_only_its_results() {
+    use lattica::reduce::{Delta, ReductionWorkspace, lll, lll_deep};
+
+    const DIMENSION: usize = 12;
+    let gram = skewed_gram(DIMENSION);
+    let mut workspace = ReductionWorkspace::<i64>::new(DIMENSION).unwrap();
+
+    // Warm every path once, then count a steady-state call. The only allowed
+    // allocations are the returned Gram matrix buffer and transform buffer.
+    // The one-shot results double as the differential oracle.
+    let ordinary_expected = lll(&gram, Delta::STRONG).unwrap();
+    let deep_expected = lll_deep(&gram, Delta::STRONG).unwrap();
+    drop(workspace.reduce(&gram, Delta::STRONG).unwrap());
+    let ordinary_allocations = allocations_during(|| {
+        assert_eq!(
+            workspace.reduce(&gram, Delta::STRONG).unwrap().gram,
+            ordinary_expected.gram
+        );
+    });
+    assert_eq!(
+        ordinary_allocations, 2,
+        "warm prepared reduction allocated {ordinary_allocations} times"
+    );
+
+    drop(workspace.reduce_deep(&gram, Delta::STRONG).unwrap());
+    let deep_allocations = allocations_during(|| {
+        assert_eq!(
+            workspace.reduce_deep(&gram, Delta::STRONG).unwrap().gram,
+            deep_expected.gram
+        );
+    });
+    assert_eq!(
+        deep_allocations, 2,
+        "warm prepared deep reduction allocated {deep_allocations} times"
+    );
+
+    // The one-shot public path still pays for its own setup state, which is
+    // precisely what the prepared form removes.
+    let one_shot_allocations = allocations_during(|| {
+        drop(lll(&gram, Delta::STRONG).unwrap());
+    });
+    assert!(
+        one_shot_allocations > 2,
+        "one-shot reduction allocated {one_shot_allocations} times"
+    );
+}

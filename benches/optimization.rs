@@ -8,7 +8,8 @@ use lattica::basis::Gram;
 use lattica::gso::Gso;
 use lattica::int::{Int, IntMatrix, adjugate, hnf, hnf_mod_det, invariant_factors};
 use lattica::reduce::{
-    Delta, Reduced, ReductionStats, is_reduced, lll, lll_deep, lll_deep_profiled, lll_profiled,
+    Delta, Reduced, ReductionStats, ReductionWorkspace, is_reduced, lll, lll_deep,
+    lll_deep_profiled, lll_profiled,
 };
 
 const DIMENSIONS: [usize; 3] = [8, 16, 24];
@@ -192,9 +193,24 @@ fn benchmark_deep_lll() {
                     black_box(lll(black_box(gram), Delta::STRONG).unwrap());
                 }
             });
+            let mut workspace = ReductionWorkspace::<i128>::new(dimension).unwrap();
+            let prepared_elapsed = measured(|| {
+                for gram in &bases {
+                    black_box(workspace.reduce(black_box(gram), Delta::STRONG).unwrap());
+                }
+            });
             let deep_elapsed = measured(|| {
                 for gram in &bases {
                     black_box(lll_deep(black_box(gram), Delta::STRONG).unwrap());
+                }
+            });
+            let deep_prepared_elapsed = measured(|| {
+                for gram in &bases {
+                    black_box(
+                        workspace
+                            .reduce_deep(black_box(gram), Delta::STRONG)
+                            .unwrap(),
+                    );
                 }
             });
             let ordinary_certificate = measured(|| {
@@ -211,7 +227,9 @@ fn benchmark_deep_lll() {
             let basis_count = f64::from(u32::try_from(bases.len()).unwrap());
             for (metric, duration) in [
                 ("lll_ns", ordinary_elapsed),
+                ("lll_prepared_ns", prepared_elapsed),
                 ("lll_deep_ns", deep_elapsed),
+                ("lll_deep_prepared_ns", deep_prepared_elapsed),
                 ("lll_certificate_ns", ordinary_certificate),
                 ("lll_deep_certificate_ns", deep_certificate),
             ] {
@@ -331,6 +349,12 @@ fn benchmark_lll() {
                     black_box(lll(black_box(gram), Delta::STRONG).unwrap());
                 }
             });
+            let mut workspace = ReductionWorkspace::<i128>::new(dimension).unwrap();
+            let prepared_elapsed = measured(|| {
+                for gram in &bases {
+                    black_box(workspace.reduce(black_box(gram), Delta::STRONG).unwrap());
+                }
+            });
             let (_, stats) = lll_profiled(&bases[0], Delta::STRONG).unwrap();
             let certificate = measured(|| {
                 for gram in &bases {
@@ -344,6 +368,10 @@ fn benchmark_lll() {
             let per_basis = elapsed.as_secs_f64() * 1e9 / basis_count;
             let certificate_ns = certificate.as_secs_f64() * 1e9 / basis_count;
             println!("lll_ns,{dimension},shear_{shear_bits},{per_basis:.2},{fingerprint}");
+            println!(
+                "lll_prepared_ns,{dimension},shear_{shear_bits},{:.2},{fingerprint}",
+                prepared_elapsed.as_secs_f64() * 1e9 / basis_count
+            );
             println!(
                 "lll_certificate_ns,{dimension},shear_{shear_bits},{certificate_ns:.2},{fingerprint}"
             );

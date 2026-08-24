@@ -41,6 +41,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   the existing deterministic corpora, stratified by dimension, shear density,
   and entry width. Cells outside a width's accepted domain report the
   deterministic `overflow` boundary instead of a time.
+- Unstable `ReductionWorkspace` reuses the Gram copy, transform, row scratch,
+  and exact factorization buffers across same-dimension reductions. Repeated
+  calls drop from nine allocations to exactly two (the returned matrices) and
+  improve repeated-call latency by up to 12.8%, with results bit-identical to
+  the one-shot functions and unchanged one-shot behavior.
 
 ## [0.2.0]
 

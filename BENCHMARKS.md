@@ -471,6 +471,47 @@ at every dimension already exceeds `i32` almost everywhere by dimension 16.
 Any prepared workspace must preserve these exact overflow boundaries, since
 widening them changes the contract rather than optimizing it.
 
+## Prepared reduction workspace
+
+Command:
+
+```sh
+taskset -c 2 cargo bench --bench optimization --features internals
+taskset -c 2 cargo bench --bench fplll_compare
+```
+
+Measured 2026-08-24 against the factorization-stratification baseline.
+`ReductionWorkspace` (unstable, behind `internals`) allocates the Gram copy,
+transform, row scratch, and factorization buffers once and refactors them per
+same-dimension call. The descent is shared with the one-shot path and inlined
+at both call sites: an out-of-line shared loop measurably regressed the public
+path and was rejected in favor of the inline hint.
+
+A counting-allocator test pins steady-state reuse to exactly two allocations
+per call — the returned Gram buffer and transform buffer — down from nine in
+the one-shot shape. Outputs are pinned bit-identical to `lll`/`lll_deep` by
+width-generic differential tests across ordinary and deep reduction,
+including after rejected calls.
+
+Median of three core-pinned rounds, each cell comparing the prepared path
+against one-shot `lll` inside the same process:
+
+| Dimension | Geometry | Ordinary | Deep |
+| ---: | :--- | ---: | ---: |
+| 8 | shear_2 / shear_4 / shear_6 | -3.2 / -12.8 / -5.5% | — |
+| 8 | insertion_light / medium / dense | -2.3 / -3.3 / -3.4% | -5.0 / -2.4 / -3.2% |
+| 16 | shear_2 / shear_4 / shear_6 | -2.7 / -2.1 / -1.7% | — |
+| 16 | insertion_light / medium / dense | -0.4 / -1.8 / -2.2% | -1.6 / -1.5 / -1.3% |
+| 24 | shear_2 / shear_4 / shear_6 | -0.2 / -0.3 / -1.0% | — |
+| 24 | insertion_light / medium / dense | +0.2 / -0.4 / -0.5% | -0.1 / -0.5 / -0.0% |
+
+The win tracks the fixed setup share: largest at dimension 8 where setup is a
+larger fraction of total latency, tapering toward parity at dimension 24
+where checked division dominates every path. The one-shot public boundary was
+re-measured under alternated-order interleaving; its medians moved within this
+host's run-to-run dispersion for identical binaries, which is a noise
+boundary rather than a measured regression.
+
 ## Comparison target selection
 
 fplll remains the useful general-CVP target: its in-process public API exposes
