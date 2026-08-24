@@ -435,6 +435,42 @@ Seven interleaved insertion-corpus runs put ordinary LLL movement between
 from `4.847/45.004/160.253 µs` to `4.913/44.814/160.288 µs` at dimensions
 8/16/24. Both are noise boundaries rather than an ordinary-path regression.
 
+## Initial-factorization stratification
+
+Command:
+
+```sh
+taskset -c 2 cargo bench --bench optimization --features internals
+```
+
+Measured 2026-08-24 on the same machine and toolchain. The `factorization_ns`
+cells time `Gso::new` alone over the existing deterministic corpora,
+stratified by dimension, shear density, and entry width. Each cell narrows the
+same generated bases into `i32`, `i64`, and `i128`, so fingerprints are
+identical across the widths a geometry fits.
+
+| Dimension | Geometry | `i32` | `i64` | `i128` |
+| ---: | :--- | ---: | ---: | ---: |
+| 8 | skew_s2 | 187 ns | 211 ns | 794 ns |
+| 8 | skew_s4 | overflow | 209 ns | 712 ns |
+| 8 | skew_s6 | overflow | overflow | 706 ns |
+| 8 | insertion_light | 168 ns | 207 ns | 735 ns |
+| 8 | insertion_medium | 174 ns | 195 ns | 722 ns |
+| 8 | insertion_dense | 164 ns | 193 ns | 701 ns |
+| 16 | all six geometries | overflow | 1315–1400 ns | 5678–5931 ns |
+| 24 | all six geometries | overflow | 4188–4527 ns | 19496–19675 ns |
+
+Three findings size the reusable-workspace question. First, one exact
+factorization costs 11% to 16% of the corresponding total reduction at the
+canonical width, so amortizing it across repeated calls is bounded by that
+share even before allocation overhead. Second, checked `i128` factorization
+costs about 4 times its `i64` counterpart on identical geometries; operand
+width, not loop structure, dominates setup cost. Third, the `overflow` markers
+are the accepted-domain boundary per width: the same corpus that fits `i128`
+at every dimension already exceeds `i32` almost everywhere by dimension 16.
+Any prepared workspace must preserve these exact overflow boundaries, since
+widening them changes the contract rather than optimizing it.
+
 ## Comparison target selection
 
 fplll remains the useful general-CVP target: its in-process public API exposes

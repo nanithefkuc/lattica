@@ -37,6 +37,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   recomputing its GCD and LCM when the next denominator already divides it.
   The insertion-heavy corpora improve by 14.9% to 19.9% with unchanged
   decisions, checked overflow boundaries, operation counts, and ordinary LLL.
+- Unstable benchmarking now times the initial exact factorization alone over
+  the existing deterministic corpora, stratified by dimension, shear density,
+  and entry width. Cells outside a width's accepted domain report the
+  deterministic `overflow` boundary instead of a time.
 
 ## [0.2.0]
 

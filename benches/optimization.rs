@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 
 use lattica::Basis;
 use lattica::basis::Gram;
-use lattica::int::{IntMatrix, adjugate, hnf, hnf_mod_det, invariant_factors};
+use lattica::gso::Gso;
+use lattica::int::{Int, IntMatrix, adjugate, hnf, hnf_mod_det, invariant_factors};
 use lattica::reduce::{
     Delta, Reduced, ReductionStats, is_reduced, lll, lll_deep, lll_deep_profiled, lll_profiled,
 };
@@ -92,7 +93,7 @@ fn insertion_basis(dimension: usize, case: usize, shears: usize) -> Vec<i128> {
     basis
 }
 
-fn corpus_fingerprint(bases: &[Gram<i128>]) -> i128 {
+fn corpus_fingerprint<T: Int>(bases: &[Gram<T>]) -> i128 {
     let mut fingerprint = 0i128;
     for (case, gram) in bases.iter().enumerate() {
         for row in 0..gram.dim() {
@@ -104,7 +105,7 @@ fn corpus_fingerprint(bases: &[Gram<i128>]) -> i128 {
                     .unwrap();
                 let term = i128::try_from(index)
                     .unwrap()
-                    .checked_mul(gram.entry(row, column))
+                    .checked_mul(gram.entry(row, column).widen())
                     .unwrap();
                 fingerprint = fingerprint.checked_add(term).unwrap();
             }
@@ -238,6 +239,74 @@ fn benchmark_deep_lll() {
     }
 }
 
+/// One corpus cell of the initial-factorization benchmark: narrow the
+/// generated ambient bases into `T`, prove every factorization succeeds, and
+/// time [`Gso::new`] alone.
+///
+/// Bareiss intermediates grow with dimension, density, and entry magnitude,
+/// so not every geometry fits every width. A cell outside a width's accepted
+/// domain reports `overflow` instead of a time; those markers are the measured
+/// domain boundary, not missing data.
+fn run_factorization_cell<T: Int>(rows: &[Vec<i128>], dimension: usize, geometry: &str, bits: u32) {
+    let bases: Vec<Gram<T>> = rows
+        .iter()
+        .map(|row| {
+            let entries: Vec<T> = row
+                .iter()
+                .map(|&value| T::narrow(value).expect("generated entries fit every width"))
+                .collect();
+            Basis::from_rows(dimension, dimension, &entries)
+                .unwrap()
+                .gram()
+                .unwrap()
+        })
+        .collect();
+    let fingerprint = corpus_fingerprint(&bases);
+    for gram in &bases {
+        if Gso::new(gram).is_err() {
+            println!("factorization_ns,{dimension},{geometry}_i{bits},overflow,{fingerprint}");
+            return;
+        }
+    }
+
+    let elapsed = measured(|| {
+        for gram in &bases {
+            black_box(Gso::new(black_box(gram)).unwrap());
+        }
+    });
+    let basis_count = f64::from(u32::try_from(bases.len()).unwrap());
+    println!(
+        "factorization_ns,{dimension},{geometry}_i{bits},{:.2},{fingerprint}",
+        elapsed.as_secs_f64() * 1e9 / basis_count
+    );
+}
+
+fn benchmark_factorization() {
+    for dimension in DIMENSIONS {
+        for shear_bits in [2u32, 4, 6] {
+            let rows: Vec<_> = (0..16)
+                .map(|case| skew_basis(dimension, case, shear_bits))
+                .collect();
+            let geometry = format!("skew_s{shear_bits}");
+            run_factorization_cell::<i32>(&rows, dimension, &geometry, 32);
+            run_factorization_cell::<i64>(&rows, dimension, &geometry, 64);
+            run_factorization_cell::<i128>(&rows, dimension, &geometry, 128);
+        }
+        for (name, shears) in [
+            ("insertion_light", dimension / 4),
+            ("insertion_medium", dimension / 2),
+            ("insertion_dense", 3 * dimension / 4),
+        ] {
+            let rows: Vec<_> = (0..16)
+                .map(|case| insertion_basis(dimension, case, shears))
+                .collect();
+            run_factorization_cell::<i32>(&rows, dimension, name, 32);
+            run_factorization_cell::<i64>(&rows, dimension, name, 64);
+            run_factorization_cell::<i128>(&rows, dimension, name, 128);
+        }
+    }
+}
+
 fn benchmark_lll() {
     println!("metric,dimension,geometry,value,fingerprint");
     for dimension in DIMENSIONS {
@@ -367,4 +436,5 @@ fn main() {
     benchmark_lll();
     benchmark_deep_lll();
     benchmark_algebra();
+    benchmark_factorization();
 }
