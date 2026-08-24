@@ -64,6 +64,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   whose outputs are checked against published facet counts. New fixtures pin
   the facet counts, opposite pairing, and lexicographic order of the public
   result.
+- Relevant-vector coset minima now live in flat storage — one norm, an
+  arrival count capped past two, and two coordinate blocks per coset — so
+  the classification walk allocates nothing per vector. The corpus improves
+  by 5.9% to 24.2% while per-call allocations drop by three to four orders
+  of magnitude; ties beyond the second are proved irrelevant exactly as
+  before.
 
 ## [0.2.0]
 

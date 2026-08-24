@@ -19,10 +19,71 @@ use std::time::Instant;
 /// dimensional oracle and facet work, not for high-dimensional decoding.
 pub const MAX_RELEVANT_DIM: usize = 16;
 
+/// Flat per-coset minima: one best norm, an arrival count capped past two,
+/// and up to two coordinate blocks for the opposite-pair check.
+///
+/// A coset is Voronoi-relevant exactly when its minimum is attained by
+/// precisely two vectors and they are negatives. Ties beyond two prove the
+/// coset irrelevant, so nothing past the second block is ever stored.
 #[derive(Default)]
-struct CosetMinimum {
-    norm_sq: Option<i128>,
-    vectors: Vec<Vec<i128>>,
+struct CosetMinima {
+    n: usize,
+    norms: Vec<Option<i128>>,
+    counts: Vec<u32>,
+    blocks: Vec<i128>,
+}
+
+impl CosetMinima {
+    fn new(cosets: usize, n: usize) -> Self {
+        Self {
+            n,
+            norms: vec![None; cosets],
+            counts: vec![0; cosets],
+            blocks: vec![0; 2 * cosets * n],
+        }
+    }
+
+    fn block(&self, mask: usize, slot: usize) -> &[i128] {
+        let start = (mask * 2 + slot) * self.n;
+        &self.blocks[start..start + self.n]
+    }
+
+    fn block_mut(&mut self, mask: usize, slot: usize) -> &mut [i128] {
+        let start = (mask * 2 + slot) * self.n;
+        &mut self.blocks[start..start + self.n]
+    }
+
+    fn offer<S: CosetSink>(
+        &mut self,
+        mask: usize,
+        coordinates: &[i128],
+        norm_sq: i128,
+        sink: &mut S,
+    ) {
+        match self.norms[mask] {
+            None => {
+                self.norms[mask] = Some(norm_sq);
+                self.counts[mask] = 1;
+                self.block_mut(mask, 0).copy_from_slice(coordinates);
+            }
+            Some(current) if norm_sq < current => {
+                self.norms[mask] = Some(norm_sq);
+                self.counts[mask] = 1;
+                self.block_mut(mask, 0).copy_from_slice(coordinates);
+                sink.reset();
+            }
+            Some(current) if norm_sq == current => {
+                sink.tie();
+                let count = self.counts[mask];
+                if count < 2 {
+                    let slot = usize::try_from(count).unwrap_or(2);
+                    self.block_mut(mask, slot).copy_from_slice(coordinates);
+                    self.counts[mask] = count + 1;
+                }
+            }
+            Some(_) => {}
+        }
+    }
 }
 
 /// Enumerates every Voronoi-relevant vector of `gram`.
@@ -45,7 +106,7 @@ pub fn relevant_vectors<T: Int>(
     if coset_count == 0 {
         return Ok(Vec::new());
     }
-    let mut minima: Vec<CosetMinimum> = (0..coset_count).map(|_| CosetMinimum::default()).collect();
+    let mut minima = CosetMinima::new(coset_count, gram.dim());
     collect_coset_minima_with(gram, radius_sq, node_budget, &mut minima, &mut NoSink)?;
     Ok(materialize_relevant(&minima))
 }
@@ -79,6 +140,64 @@ fn radius_for_parity_ball<T: Int>(gram: &Gram<T>) -> Result<(usize, i128), Decod
         radius_sq = radius_sq.max(gram.norm_sq(&representative)?.widen());
     }
     Ok((coset_count, radius_sq))
+}
+
+fn collect_coset_minima_with<T: Int, S: CosetSink>(
+    gram: &Gram<T>,
+    radius_sq: i128,
+    node_budget: u64,
+    minima: &mut CosetMinima,
+    sink: &mut S,
+) -> Result<(), DecodeError> {
+    for_each_short(gram, radius_sq, node_budget, |coordinates, norm_sq| {
+        sink.emission();
+        let mask = parity_mask(coordinates);
+        minima.offer(mask, coordinates, norm_sq, sink);
+    })?;
+    Ok(())
+}
+
+fn materialize_relevant(minima: &CosetMinima) -> Vec<Vec<i128>> {
+    let mut relevant = Vec::new();
+    for mask in 1..minima.norms.len() {
+        if minima.counts[mask] != 2 {
+            continue;
+        }
+        let a = minima.block(mask, 0);
+        let b = minima.block(mask, 1);
+        if a.iter().zip(b).all(|(&x, &y)| x.checked_neg() == Some(y)) {
+            relevant.push(a.to_vec());
+            relevant.push(b.to_vec());
+        }
+    }
+    relevant.sort();
+    relevant
+}
+
+/// Unstable benchmark counters and stage timings for relevant-vector
+/// enumeration.
+///
+/// Available only with `internals`; not a compatibility promise. The
+/// enumerated result matches [`relevant_vectors`] exactly.
+#[cfg(feature = "internals")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RelevantStats {
+    /// Parity-coset representatives evaluated for the radius.
+    pub masks: u64,
+    /// Short vectors seen by the coset pass.
+    pub emissions: u64,
+    /// Strictly-better coset minima replaced.
+    pub coset_resets: u64,
+    /// Equal-minimum vectors stored beyond the first.
+    pub ties_stored: u64,
+    /// Voronoi-relevant vectors materialized.
+    pub output_len: u64,
+    /// Nanoseconds forming the radius over the parity representatives.
+    pub setup_ns: u64,
+    /// Nanoseconds enumerating and classifying short vectors.
+    pub walk_ns: u64,
+    /// Nanoseconds collecting opposite pairs and sorting.
+    pub finalize_ns: u64,
 }
 
 /// Sink receiving the classification events of the coset pass.
@@ -115,93 +234,6 @@ impl CosetSink for CountingSink {
     }
 }
 
-fn collect_coset_minima_with<T: Int, S: CosetSink>(
-    gram: &Gram<T>,
-    radius_sq: i128,
-    node_budget: u64,
-    minima: &mut [CosetMinimum],
-    sink: &mut S,
-) -> Result<(), DecodeError> {
-    for_each_short(gram, radius_sq, node_budget, |coordinates, norm_sq| {
-        sink.emission();
-        let mask = parity_mask(coordinates);
-        let state = &mut minima[mask];
-        match state.norm_sq {
-            None => {
-                state.norm_sq = Some(norm_sq);
-                state.vectors.push(coordinates.to_vec());
-            }
-            Some(current) if norm_sq < current => {
-                state.norm_sq = Some(norm_sq);
-                state.vectors.clear();
-                state.vectors.push(coordinates.to_vec());
-                sink.reset();
-            }
-            Some(current) if norm_sq == current => {
-                state.vectors.push(coordinates.to_vec());
-                sink.tie();
-            }
-            Some(_) => {}
-        }
-    })?;
-    Ok(())
-}
-
-fn materialize_relevant(minima: &[CosetMinimum]) -> Vec<Vec<i128>> {
-    let mut relevant = Vec::new();
-    for state in minima.iter().skip(1) {
-        if state.vectors.len() != 2 {
-            continue;
-        }
-        let a = &state.vectors[0];
-        let b = &state.vectors[1];
-        if a.iter().zip(b).all(|(&x, &y)| x.checked_neg() == Some(y)) {
-            relevant.extend(state.vectors.iter().cloned());
-        }
-    }
-    relevant.sort();
-    relevant
-}
-
-fn parity_mask(coordinates: &[i128]) -> usize {
-    coordinates
-        .iter()
-        .enumerate()
-        .fold(0usize, |mask, (i, &value)| {
-            if value & 1 == 0 {
-                mask
-            } else {
-                mask | (1 << i)
-            }
-        })
-}
-
-/// Unstable benchmark counters and stage timings for relevant-vector
-/// enumeration.
-///
-/// Available only with `internals`; not a compatibility promise. The
-/// enumerated result matches [`relevant_vectors`] exactly.
-#[cfg(feature = "internals")]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct RelevantStats {
-    /// Parity-coset representatives evaluated for the radius.
-    pub masks: u64,
-    /// Short vectors seen by the coset pass.
-    pub emissions: u64,
-    /// Strictly-better coset minima replaced.
-    pub coset_resets: u64,
-    /// Equal-minimum vectors stored beyond the first.
-    pub ties_stored: u64,
-    /// Voronoi-relevant vectors materialized.
-    pub output_len: u64,
-    /// Nanoseconds forming the radius over the parity representatives.
-    pub setup_ns: u64,
-    /// Nanoseconds enumerating and classifying short vectors.
-    pub walk_ns: u64,
-    /// Nanoseconds collecting opposite pairs and sorting.
-    pub finalize_ns: u64,
-}
-
 /// Enumerates relevant vectors while returning unstable benchmark counters
 /// and stage timings.
 ///
@@ -222,7 +254,7 @@ pub fn relevant_vectors_profiled<T: Int>(
         return Ok((Vec::new(), stats));
     }
 
-    let mut minima: Vec<CosetMinimum> = (0..coset_count).map(|_| CosetMinimum::default()).collect();
+    let mut minima = CosetMinima::new(coset_count, gram.dim());
     let mut sink = CountingSink::default();
     let walk_start = Instant::now();
     collect_coset_minima_with(gram, radius_sq, node_budget, &mut minima, &mut sink)?;
@@ -237,6 +269,20 @@ pub fn relevant_vectors_profiled<T: Int>(
     stats.output_len = u64::try_from(relevant.len()).unwrap_or(u64::MAX);
     Ok((relevant, stats))
 }
+
+fn parity_mask(coordinates: &[i128]) -> usize {
+    coordinates
+        .iter()
+        .enumerate()
+        .fold(0usize, |mask, (i, &value)| {
+            if value & 1 == 0 {
+                mask
+            } else {
+                mask | (1 << i)
+            }
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{MAX_RELEVANT_DIM, relevant_vectors};

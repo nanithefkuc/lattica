@@ -674,6 +674,44 @@ track emissions — `Z^12` performs over one million allocations to report 24
 vectors — because every first-of-coset and tied minimum stores a fresh
 coordinate vector.
 
+## Flat relevant-vector storage
+
+Command:
+
+```sh
+taskset -c 2 cargo bench --bench optimization --features internals
+```
+
+Measured 2026-08-24 against the stage baseline. Each coset now keeps its
+best norm, an arrival count capped past two, and at most two coordinate
+blocks in one flat buffer. A coset is relevant exactly when its minimum is
+attained by precisely two opposite vectors, so ties beyond the second are
+proved irrelevant and never stored; the per-vector heap allocation
+disappears from the walk entirely.
+
+| Dimension | Geometry | Time | Allocations |
+| ---: | :--- | ---: | ---: |
+| 8 | zn | 1.263 → 0.972 ms (-23.0%) | 10,883 → 32 |
+| 8 | a_n | 666.8 → 505.3 us (-24.2%) | 5,234 → 91 |
+| 8 | d_n | 1.604 → 1.410 ms (-12.1%) | 7,362 → 131 |
+| 8 | e8 | 1.836 → 1.525 ms (-16.9%) | 7,935 → 261 |
+| 10 | zn | 19.53 → 15.00 ms (-23.2%) | 105,558 → 39 |
+| 10 | a_n | 8.42 → 7.06 ms (-16.1%) | 43,515 → 131 |
+| 10 | d_n | 25.82 → 23.97 ms (-7.2%) | 60,721 → 203 |
+| 12 | zn | 292.8 → 239.4 ms (-18.2%) | 1,015,307 → 43 |
+| 12 | a_n | 120.3 → 101.6 ms (-15.6%) | 367,963 → 178 |
+| 12 | d_n | 435.2 → 409.6 ms (-5.9%) | 494,623 → 288 |
+
+Every cell improves, allocations fall by three to four orders of magnitude,
+and the remaining count is output-proportional plus the fixed flat buffers.
+Emitted vectors are pinned by the facet-count oracles, the opposite-pairing
+and lexicographic-order fixtures, and the unchanged public signature.
+
+The Gray-code radius traversal was rejected on the stage evidence above:
+the parity-representative loop it would accelerate is bounded at 3% of any
+cell, below this host's run-to-run dispersion, so no stable broad win was
+available.
+
 ## Comparison target selection
 
 fplll remains the useful general-CVP target: its in-process public API exposes
