@@ -285,9 +285,45 @@ fn parity_mask(coordinates: &[i128]) -> usize {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "internals")]
+    use super::relevant_vectors_profiled;
     use super::{MAX_RELEVANT_DIM, relevant_vectors};
     use crate::basis::Gram;
     use crate::named::{a_n, d_n, e8, zn};
+
+    #[test]
+    fn a_zero_dimensional_lattice_has_no_relevant_vectors() {
+        let empty = Gram::<i64>::from_rows(0, &[]).unwrap();
+        assert_eq!(
+            relevant_vectors(&empty, 1 << 8).unwrap(),
+            Vec::<Vec<i128>>::new()
+        );
+        #[cfg(feature = "internals")]
+        {
+            let (v, stats) = relevant_vectors_profiled(&empty, 1 << 8).unwrap();
+            assert!(v.is_empty());
+            assert_eq!(stats.masks, 0);
+        }
+    }
+
+    /// The profiled path returns the same vectors as the public one, with
+    /// counters that partition the walk.
+    #[cfg(feature = "internals")]
+    #[test]
+    fn profiled_counters_match_the_public_path() {
+        let g = d_n::<i64>(6).unwrap();
+        let plain = relevant_vectors(&g, 1 << 24).unwrap();
+        let (profiled, stats) = relevant_vectors_profiled(&g, 1 << 24).unwrap();
+        assert_eq!(plain, profiled);
+        assert_eq!(stats.output_len, u64::try_from(profiled.len()).unwrap());
+        assert_eq!(stats.masks, 63);
+        assert!(stats.emissions >= stats.output_len);
+        assert!(stats.coset_resets > 0);
+        assert!(stats.walk_ns > 0 && stats.setup_ns > 0);
+        // Emissions exceed stored ties because irrelevant minima are dropped
+        // and strictly-worse vectors change nothing.
+        assert!(stats.ties_stored > 0);
+    }
 
     #[test]
     fn the_cubic_lattice_has_only_its_axes() {

@@ -642,8 +642,21 @@ mod tests {
     #[cfg(feature = "internals")]
     #[test]
     fn profiled_counters_partition_the_walk() {
-        use super::census_profiled;
+        use super::{census, census_profiled, for_each_short_profiled};
         use crate::named::{e8, zn};
+
+        // A zero-dimensional Gram short-circuits every entry point.
+        let empty = Gram::<i64>::from_rows(0, &[]).unwrap();
+        let public = census(&empty, DEFAULT_NODE_BUDGET).unwrap();
+        assert_eq!(public.total, 0);
+        assert_eq!(public.min_norm_sq, None);
+        let (census, stats) = census_profiled(&empty, DEFAULT_NODE_BUDGET).unwrap();
+        assert_eq!(census.total, 0);
+        assert_eq!(stats, super::EnumerationStats::default());
+        assert_eq!(
+            for_each_short_profiled(&empty, 4, 8, |_, _| {}).unwrap(),
+            (0, stats)
+        );
 
         // Z^4's census runs at the minimal diagonal, radius one: exactly the
         // axis vectors ±e_i survive.
@@ -664,6 +677,13 @@ mod tests {
         assert_eq!(census.kissing_number, 240);
         assert_eq!(stats.leaf_norms, census.total);
         assert_eq!(stats.leaves, census.total + 1);
+
+        // The radius-controlled profiled path reports the same partition.
+        let (nodes, stats) =
+            for_each_short_profiled(&e8::<i64>().unwrap(), 2, DEFAULT_NODE_BUDGET, |_, _| {})
+                .unwrap();
+        assert_eq!(nodes, stats.nodes);
+        assert_eq!(stats.leaves, 241);
     }
 
     #[cfg(feature = "internals")]
