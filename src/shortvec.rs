@@ -228,7 +228,7 @@ where
         observer,
         visit,
     };
-    walk.descend(n, 0)?;
+    walk.descend(n, 0, 0)?;
     Ok(walk.nodes)
 }
 
@@ -435,8 +435,11 @@ struct Walk<'a, F, O> {
 
 impl<F: FnMut(&[i128], i128), O: EnumerationObserver> Walk<'_, F, O> {
     /// Chooses coordinate `remaining - 1`, with `acc` the scaled partial norm
-    /// contributed by the coordinates already fixed.
-    fn descend(&mut self, remaining: usize, acc: i128) -> Result<(), DecodeError> {
+    /// and `tail` the exact suffix sum of the coordinates already fixed.
+    ///
+    /// The caller forms that suffix sum once for the whole sibling group, so
+    /// no node recomputes a dot product that its parent could amortize.
+    fn descend(&mut self, remaining: usize, acc: i128, tail: i128) -> Result<(), DecodeError> {
         self.nodes += 1;
         self.observer.node();
         if self.nodes > self.budget {
@@ -458,15 +461,6 @@ impl<F: FnMut(&[i128], i128), O: EnumerationObserver> Walk<'_, F, O> {
         let n = self.n;
         let diagonal = self.f.upper[k * n + k];
 
-        // The part of S_k already determined by the coordinates above k.
-        let mut tail = 0i128;
-        for j in k + 1..n {
-            if self.coords[j] != 0 {
-                self.observer.tail_term();
-                tail = add(tail, mul(self.f.upper[k * n + j], self.coords[j])?)?;
-            }
-        }
-
         // S_k² · weights[k] ≤ limit - acc, so |S_k| ≤ isqrt((limit - acc) / w).
         let room = sub(self.limit, acc)?;
         if room < 0 {
@@ -477,13 +471,36 @@ impl<F: FnMut(&[i128], i128), O: EnumerationObserver> Walk<'_, F, O> {
         let lo = ceil_div(sub(neg(bound)?, tail)?, diagonal);
         let hi = floor_div(sub(bound, tail)?, diagonal);
 
+        // Every child at level `k - 1` needs the row-`k - 1` suffix sum over
+        // the coordinates above `k`, which are frozen throughout this value
+        // loop. Form it once; each child's own tail is then one rank-one
+        // update with its chosen value.
+        let child_base = if k > 0 {
+            let mut base = 0i128;
+            for j in k + 1..n {
+                if self.coords[j] != 0 {
+                    self.observer.tail_term();
+                    base = add(base, mul(self.f.upper[(k - 1) * n + j], self.coords[j])?)?;
+                }
+            }
+            base
+        } else {
+            0
+        };
+        let child_diagonal = if k > 0 {
+            self.f.upper[(k - 1) * n + k]
+        } else {
+            0
+        };
+
         let mut value = lo;
         while value <= hi {
             let s = add(mul(diagonal, value)?, tail)?;
             let next = add(acc, mul(mul(s, s)?, self.f.weights[k])?)?;
             if next <= self.limit {
                 self.coords[k] = value;
-                self.descend(k, next)?;
+                let child_tail = add(mul(child_diagonal, value)?, child_base)?;
+                self.descend(k, next, child_tail)?;
             }
             value += 1;
         }

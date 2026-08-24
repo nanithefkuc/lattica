@@ -554,6 +554,39 @@ recomputation performs roughly `n²` operations per emitted vector — about
 98 million at `d_n_radius_4`, which is most of that cell's wall time. These
 are the measurement targets for tail caching and carried norms.
 
+## Amortized enumeration tails
+
+Command:
+
+```sh
+taskset -c 2 cargo bench --bench optimization --features internals
+```
+
+Measured 2026-08-24 against the observability baseline. Each node previously
+recomputed its own suffix dot product on entry; now a parent forms, once per
+value loop, the row suffix sum every child share, and each child receives its
+tail as one rank-one update with its chosen coordinate.
+
+Tail-term counts drop by 23% to 57% in every cell:
+
+| Dimension | Geometry | Tail terms | Time |
+| ---: | :--- | ---: | ---: |
+| 8 | zn_radius_2 | 504 → 322 | -2.1% |
+| 8 | a_n_radius_2 | 420 → 252 | +2.3% |
+| 8 | d_n_radius_4 | 6,704 → 2,882 | -4.3% |
+| 8 | e8_radius_2 | 2,170 → 1,204 | -0.2% |
+| 16 | zn_radius_2 | 4,720 → 3,850 | +2.3% |
+| 16 | a_n_radius_2 | 6,120 → 4,760 | -7.1% |
+| 16 | d_n_radius_4 | 683,276 → 453,502 | -3.1% |
+| 24 | zn_radius_2 | 16,744 → 14,674 | -8.7% |
+| 24 | a_n_radius_2 | 29,900 → 25,300 | -4.3% |
+| 24 | d_n_radius_4 | 9,594,188 → 7,426,654 | -2.0% |
+
+Eight of ten cells improve; the two small movements are within this host's
+identical-binary dispersion and sit in cells where tails are under 5% of
+total work. The direct-norm recomputation remains untouched here and still
+dominates — that is the next isolated change.
+
 ## Comparison target selection
 
 fplll remains the useful general-CVP target: its in-process public API exposes
