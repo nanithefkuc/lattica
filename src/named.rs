@@ -317,7 +317,10 @@ fn path_edges(n: usize) -> Vec<(usize, usize)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{a_n, a_n_basis, d_n, d_n_basis, e8, e8_generator, zn, zn_basis};
+    use super::{
+        a_n, a_n_basis, bw16, cartan, d_n, d_n_basis, e8, e8_generator, gram_from_scaled_generator,
+        leech24, zn, zn_basis,
+    };
     use crate::basis::Gram;
     use crate::error::LatticeError;
 
@@ -415,5 +418,24 @@ mod tests {
     #[test]
     fn a_one_is_the_scaled_integer_lattice() {
         assert_eq!(a_n::<i64>(1).unwrap(), Gram::from_rows(1, &[2]).unwrap());
+    }
+    #[test]
+    fn high_dimensional_generators_recover_exact_gram_invariants() {
+        let barnes_wall = bw16::<i64>().unwrap();
+        assert_eq!(barnes_wall.dim(), 16);
+        assert_eq!(barnes_wall.det().unwrap(), 256);
+
+        let leech = leech24::<i64>().unwrap();
+        assert_eq!(leech.dim(), 24);
+        assert_eq!(leech.det().unwrap(), 1);
+    }
+
+    #[test]
+    fn scaled_and_cartan_constructors_reject_invalid_internal_geometry() {
+        assert_eq!(
+            gram_from_scaled_generator::<i64>(1, &[1], 2),
+            Err(LatticeError::Degenerate)
+        );
+        assert_eq!(cartan::<i64>(2, &[(0, 0)]), Err(LatticeError::Degenerate));
     }
 }

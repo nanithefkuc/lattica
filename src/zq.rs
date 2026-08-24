@@ -327,4 +327,16 @@ mod tests {
         // The rejected call wrote nothing.
         assert_eq!(out, [0, 0]);
     }
+    #[test]
+    fn slice_helpers_reduce_and_lift_each_coordinate() {
+        let ring = zq(7);
+        let mut residues = [0u32; 5];
+        ring.reduce_slice(&[-8, -1, 0, 6, 8], &mut residues)
+            .unwrap();
+        assert_eq!(residues, [6, 6, 0, 6, 1]);
+
+        let mut lifted = [0i32; 5];
+        ring.lift_slice(&residues, &mut lifted).unwrap();
+        assert_eq!(lifted, [-1, -1, 0, -1, 1]);
+    }
 }

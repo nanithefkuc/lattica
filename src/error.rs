@@ -298,3 +298,141 @@ mod std_impls {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{DecodeError, LatticeError, Op, RangeError, ReduceError};
+    use std::error::Error as _;
+
+    fn overflow() -> RangeError {
+        RangeError::Overflow {
+            op: Op::Mul,
+            width_bits: 64,
+        }
+    }
+
+    #[test]
+    fn operation_and_range_displays_preserve_details() {
+        for (op, expected) in [
+            (Op::Add, "addition"),
+            (Op::Sub, "subtraction"),
+            (Op::Mul, "multiplication"),
+            (Op::Neg, "negation"),
+            (Op::Div, "division"),
+        ] {
+            assert_eq!(op.to_string(), expected);
+        }
+
+        assert_eq!(
+            overflow().to_string(),
+            "multiplication overflowed 64-bit integer"
+        );
+        assert_eq!(
+            RangeError::InexactDivision.to_string(),
+            "expected an exact division"
+        );
+        assert_eq!(
+            RangeError::Dimension {
+                requested: 25,
+                max: 24
+            }
+            .to_string(),
+            "dimension 25 exceeds the maximum of 24"
+        );
+        assert_eq!(
+            RangeError::Shape {
+                expected: 8,
+                found: 7
+            }
+            .to_string(),
+            "expected 8 elements, found 7"
+        );
+        assert!(overflow().source().is_none());
+    }
+
+    #[test]
+    fn decode_displays_and_sources_preserve_details() {
+        for (error, expected) in [
+            (
+                DecodeError::BudgetExhausted {
+                    nodes: 12,
+                    radius_sq: 3.5,
+                },
+                "enumeration budget exhausted after 12 nodes at squared radius 3.5",
+            ),
+            (
+                DecodeError::InvalidRadius { radius_sq: -1.0 },
+                "invalid squared search radius -1",
+            ),
+            (
+                DecodeError::OutsideRadius { radius_sq: 2.0 },
+                "no lattice point within squared radius 2",
+            ),
+            (DecodeError::NotInLattice, "point is not in the lattice"),
+            (
+                DecodeError::EnumerationBudget { nodes: 9 },
+                "enumeration budget exhausted after 9 nodes",
+            ),
+            (
+                DecodeError::LengthMismatch {
+                    expected: 4,
+                    found: 3,
+                },
+                "expected 4 coordinates, found 3",
+            ),
+            (
+                DecodeError::NonFinite { index: 2 },
+                "coordinate 2 is not finite",
+            ),
+            (
+                DecodeError::from(overflow()),
+                "multiplication overflowed 64-bit integer",
+            ),
+        ] {
+            assert_eq!(error.to_string(), expected);
+        }
+        assert!(DecodeError::from(overflow()).source().is_some());
+        assert!(DecodeError::NotInLattice.source().is_none());
+    }
+
+    #[test]
+    fn reduction_and_lattice_displays_preserve_details() {
+        for (error, expected) in [
+            (ReduceError::Singular, "matrix is singular"),
+            (
+                ReduceError::NotFullRank {
+                    rank: 2,
+                    required: 3,
+                },
+                "rank 2 is below the required 3",
+            ),
+            (
+                ReduceError::BudgetExhausted { steps: 17 },
+                "reduction did not converge after 17 steps",
+            ),
+            (
+                ReduceError::from(overflow()),
+                "multiplication overflowed 64-bit integer",
+            ),
+        ] {
+            assert_eq!(error.to_string(), expected);
+        }
+        assert!(ReduceError::from(overflow()).source().is_some());
+        assert!(ReduceError::Singular.source().is_none());
+
+        for (error, expected) in [
+            (LatticeError::BadModulus, "modulus is out of range"),
+            (LatticeError::BadSupport, "support is malformed"),
+            (LatticeError::NotNested, "lattices are not nested"),
+            (LatticeError::Degenerate, "basis is degenerate"),
+            (
+                LatticeError::from(overflow()),
+                "multiplication overflowed 64-bit integer",
+            ),
+        ] {
+            assert_eq!(error.to_string(), expected);
+        }
+        assert!(LatticeError::from(overflow()).source().is_some());
+        assert!(LatticeError::Degenerate.source().is_none());
+    }
+}

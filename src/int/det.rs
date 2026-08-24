@@ -220,7 +220,8 @@ fn adjugate_cofactors<T: Int>(a: &IntMatrix<T>) -> Result<IntMatrix<T>, RangeErr
 
 #[cfg(test)]
 mod tests {
-    use super::det;
+    use super::{adjugate, det};
+    use crate::error::RangeError;
     use crate::int::IntMatrix;
 
     #[test]
@@ -247,5 +248,42 @@ mod tests {
     fn rejects_a_non_square_matrix() {
         let m = IntMatrix::<i64>::zeros(2, 3).unwrap();
         assert!(det(&m).is_err());
+    }
+    #[test]
+    fn adjugate_handles_shared_solve_fallbacks_and_small_shapes() {
+        let nonsquare = IntMatrix::<i64>::zeros(2, 3).unwrap();
+        assert!(matches!(
+            adjugate(&nonsquare),
+            Err(RangeError::Shape {
+                expected: 2,
+                found: 3
+            })
+        ));
+        assert_eq!(
+            adjugate(&IntMatrix::<i64>::zeros(0, 0).unwrap()).unwrap(),
+            IntMatrix::zeros(0, 0).unwrap()
+        );
+        assert_eq!(
+            adjugate(&IntMatrix::<i64>::from_rows(1, 1, &[7]).unwrap()).unwrap(),
+            IntMatrix::identity(1).unwrap()
+        );
+
+        let matrix =
+            IntMatrix::<i64>::from_rows(4, 4, &[0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 2, 1, 0, 0, 1, 1])
+                .unwrap();
+        let determinant = det(&matrix).unwrap();
+        let product = adjugate(&matrix).unwrap().mul(&matrix).unwrap();
+        for row in 0..4 {
+            for column in 0..4 {
+                assert_eq!(
+                    product.get(row, column),
+                    if row == column { determinant } else { 0 }
+                );
+            }
+        }
+
+        let singular = IntMatrix::<i64>::from_rows(3, 3, &[1, 2, 3, 2, 4, 6, 0, 1, 1]).unwrap();
+        let adj = adjugate(&singular).unwrap();
+        assert_eq!(adj.mul(&singular).unwrap(), IntMatrix::zeros(3, 3).unwrap());
     }
 }
