@@ -21,12 +21,13 @@
 //! sounds: the certificate a caller checks would then differ from the one the
 //! algorithm enforced.
 //!
-//! # This is precompute
+//! # Exact incremental state
 //!
-//! Reduction is per-code setup, not per-symbol work, so it is written for
-//! obviousness over speed. The orthogonalization is recomputed after each
-//! basis change rather than updated in place; the update rules are a classical
-//! source of subtle bugs and buy nothing at the dimensions this crate serves.
+//! Reduction is per-code setup, but it still keeps the symmetric Gram matrix
+//! and fraction-free orthogonalization synchronized after every elementary
+//! basis operation. Ordinary LLL delays reductions that cannot affect the
+//! next Lovász test until that test passes; every quotient and decision remains
+//! exact.
 
 // The `Delta` bounds check widens two `u32`s; nothing else here leaves the
 // integers.
@@ -481,6 +482,22 @@ fn reduce_with<T: Int>(
 ) -> Result<Reduced<T>, ReduceError> {
     reduce_observed(gram, delta, deep, &mut Unobserved)
 }
+fn size_reduce_pair<T: Int, O: ReductionObserver>(
+    state: &mut State<T>,
+    gso: &mut Gso<T>,
+    target: usize,
+    source: usize,
+    observer: &mut O,
+) -> Result<(), ReduceError> {
+    let quotient = div_nearest(gso.lambda(target, source), gso.minor(source + 1))?;
+    if quotient.is_zero() {
+        return Ok(());
+    }
+    let state_updates = state.subtract(target, source, quotient)?;
+    gso.size_reduce(target, source, quotient)?;
+    observer.size_reduction(state_updates + 2 * u64::try_from(source + 1).unwrap_or(u64::MAX));
+    Ok(())
+}
 
 fn reduce_observed<T: Int, O: ReductionObserver>(
     gram: &Gram<T>,
@@ -502,18 +519,11 @@ fn reduce_observed<T: Int, O: ReductionObserver>(
         guard(&mut steps, BUDGET)?;
         observer.iteration();
 
-        // Size-reduce b_k against every earlier vector, largest index first.
-        for j in (0..k).rev() {
-            let quotient = div_nearest(gso.lambda(k, j), gso.minor(j + 1))?;
-            if quotient.is_zero() {
-                continue;
-            }
-            let state_updates = state.subtract(k, j, quotient)?;
-            gso.size_reduce(k, j, quotient)?;
-            observer.size_reduction(state_updates + 2 * u64::try_from(j + 1).unwrap_or(u64::MAX));
-        }
-
         if deep {
+            // Deep insertion needs every projected coefficient of b_k.
+            for j in (0..k).rev() {
+                size_reduce_pair(&mut state, &mut gso, k, j, observer)?;
+            }
             if let Some(target) = deep_insertion_point(&gso, k, delta)? {
                 state.rotate(k, target, &mut gso)?;
                 observer.deep_insertion();
@@ -529,7 +539,17 @@ fn reduce_observed<T: Int, O: ReductionObserver>(
                 continue;
             }
             k += 1;
-        } else if lovasz_holds(&gso, k, delta)? {
+            continue;
+        }
+
+        // The Lovász test only depends on μ[k][k-1]. Delay reductions against
+        // earlier vectors until the test passes, avoiding work that a swap
+        // would immediately invalidate.
+        size_reduce_pair(&mut state, &mut gso, k, k - 1, observer)?;
+        if lovasz_holds(&gso, k, delta)? {
+            for j in (0..k - 1).rev() {
+                size_reduce_pair(&mut state, &mut gso, k, j, observer)?;
+            }
             k += 1;
         } else {
             state.swap(k - 1, k);

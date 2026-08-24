@@ -5,6 +5,15 @@ All notable changes to `lattica` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Ordinary exact LLL delays size-reduction quotients that cannot affect the
+  next Lovász test until that test passes. The comparison corpus improves by
+  14.1% to 16.9% at dimensions 8, 16, and 24 without changing its reduction
+  operation counts or exact certificates.
+
 ## [0.2.0]
 
 Decoding moves out: this crate is now the lattice-arithmetic object only, and

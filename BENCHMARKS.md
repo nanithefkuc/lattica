@@ -140,6 +140,38 @@ and determinant certificates. Those are semantic work under the crate's exact
 fixed-width contract; replacing them with approximate scheduling or unchecked
 arithmetic would change the contract rather than optimize it.
 
+## Lazy exact size reduction
+
+Command:
+
+```sh
+taskset -c 2 cargo bench --bench fplll_compare
+taskset -c 2 cargo bench --bench optimization --features internals
+```
+
+Measured 2026-08-24 on the same machine. The comparison A/B used 101 internal
+samples to reduce short-run dispersion; the table reports the baseline and the
+median of three post-change runs. Ordinary LLL now reduces `b_k` against
+`b_{k-1}` before the Lovász test and delays quotients against earlier vectors
+until that test passes. Those earlier coefficients cannot affect the test, and
+a failed test immediately swaps the vectors, so eager evaluation was exact work
+whose result was about to be invalidated.
+
+| Dimension | Before | After | Reduction |
+| ---: | ---: | ---: | ---: |
+| 8 | 6.400 µs | 5.497 µs | 14.1% |
+| 16 | 68.863 µs | 57.216 µs | 16.9% |
+| 24 | 245.678 µs | 207.225 µs | 15.7% |
+
+Across the nine shear geometries in the optimization corpus, reduction time
+fell by 8.3% to 14.5%. Factorization, nonzero size-reduction, swap, iteration,
+Gram-copy, and checked-update counts were unchanged for every geometry. The
+independent randomized certificate suite continued to prove size reduction,
+the Lovász condition, unimodularity, and `U G U^T == G_reduced`; deep-insertion
+LLL retains its eager pass because its insertion predicate consumes every
+projected coefficient.
+
+
 ## Comparison target selection
 
 fplll remains the useful general-CVP target: its in-process public API exposes
