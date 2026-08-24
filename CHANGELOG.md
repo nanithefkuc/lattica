@@ -29,6 +29,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   rows through contiguous preflight and commit slices. Eight of nine reduction
   geometries improve, including 4.2% to 7.9% at dimensions 16 and 24; the
   comparison corpus reaches measurement parity with fplll there.
+- Deep-insertion LLL now has deterministic insertion-heavy benchmark corpora at
+  dimensions 8, 16, and 24. Unstable profiling counts suffix-predicate terms,
+  denominator rescalings, and exact divisions; the harness times ordinary LLL,
+  deep LLL, and their full certificate checks independently.
 
 ## [0.2.0]
 

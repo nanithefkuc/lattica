@@ -319,6 +319,64 @@ parity with fplll's ambient-basis boundary at dimensions 16 and 24. The
 post-change profile is dominated by checked `i128` division and the two exact
 update families; further ordinary-LLL recurrence changes need new evidence.
 
+## Deep-insertion reduction baseline
+
+Command:
+
+```sh
+taskset -c 2 cargo bench --bench optimization --features internals
+```
+
+Measured 2026-08-24 on the same machine and toolchain. Each dimension has
+three 16-basis insertion-heavy corpora. Their diagonal scales put all
+length-two basis vectors before all length-one vectors; deterministic
+upper-row shears then perturb one quarter, one half, or three quarters as many
+rows as the dimension. This preserves a small exact determinant while forcing
+deep movement. The fingerprints below cover every Gram entry, not just the
+determinant.
+
+The table reports the median of three core-pinned runs, each itself the median
+of 11 in-process samples. Reduction and full certificate validation are timed
+separately. Certificate validation independently checks size reduction and
+Lovász, determinant preservation, unimodularity, and
+`U G U^T == G_reduced`.
+
+| Dimension | Geometry | LLL | Deep LLL | LLL certificate | Deep certificate |
+| ---: | :--- | ---: | ---: | ---: | ---: |
+| 8 | light | 2.671 µs | 5.249 µs | 2.491 µs | 2.437 µs |
+| 8 | medium | 2.982 µs | 5.818 µs | 2.644 µs | 2.690 µs |
+| 8 | dense | 3.317 µs | 6.402 µs | 2.836 µs | 2.768 µs |
+| 16 | light | 19.255 µs | 37.468 µs | 18.644 µs | 18.569 µs |
+| 16 | medium | 21.017 µs | 40.697 µs | 19.390 µs | 19.203 µs |
+| 16 | dense | 23.306 µs | 45.006 µs | 20.394 µs | 20.173 µs |
+| 24 | light | 64.477 µs | 121.847 µs | 61.719 µs | 61.626 µs |
+| 24 | medium | 69.530 µs | 131.469 µs | 65.197 µs | 64.773 µs |
+| 24 | dense | 78.097 µs | 147.623 µs | 68.959 µs | 67.478 µs |
+
+Unstable counters are collected in one untimed profiled pass and aggregated
+over all 16 bases. Predicate terms count the exact suffix-sum terms formed by
+the single reverse pass. Exact divisions count one denominator weight per
+coefficient plus one additional division whenever the carried sum is rescaled.
+
+| Dimension | Geometry | Insertions | Adjacent swaps | Predicate terms | Rescalings | Exact divisions | Checked updates | Fingerprint |
+| ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 | light | 79 | 291 | 2,122 | 6 | 1,666 | 17,878 | 180,033 |
+| 8 | medium | 94 | 326 | 2,274 | 39 | 1,809 | 19,670 | 216,530 |
+| 8 | dense | 108 | 349 | 2,367 | 119 | 1,956 | 21,212 | 236,162 |
+| 16 | light | 198 | 1,190 | 13,116 | 41 | 11,553 | 156,210 | 1,509,307 |
+| 16 | medium | 233 | 1,297 | 13,944 | 243 | 12,451 | 166,428 | 1,547,581 |
+| 16 | dense | 260 | 1,419 | 14,900 | 799 | 13,814 | 178,034 | 2,413,529 |
+| 24 | light | 342 | 2,707 | 40,089 | 146 | 36,847 | 544,076 | 5,069,362 |
+| 24 | medium | 391 | 2,894 | 42,598 | 1,134 | 40,103 | 567,878 | 6,320,229 |
+| 24 | dense | 459 | 3,254 | 45,977 | 2,390 | 44,318 | 617,792 | 6,825,752 |
+
+Deep LLL costs 1.87x to 1.98x ordinary LLL on these corpora. Certificate
+latencies remain comparable because both paths return the same exact contract,
+not because their non-canonical reduced Gram matrices are expected to match.
+Increasing shear density raises both deep insertions and denominator
+rescalings, selecting the suffix predicate arithmetic as the next isolated
+measurement target.
+
 ## Comparison target selection
 
 fplll remains the useful general-CVP target: its in-process public API exposes

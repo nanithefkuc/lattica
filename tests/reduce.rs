@@ -109,7 +109,7 @@ fn lll_output_always_carries_a_valid_certificate() {
 }
 
 #[test]
-fn deep_insertion_carries_the_same_certificate() {
+fn randomized_ordinary_and_deep_outputs_share_the_certificate_contract() {
     let mut rng = Rng(0x22EE_33DD_44CC_55BB);
     let mut checked = 0;
     for n in 2..=5 {
@@ -117,16 +117,22 @@ fn deep_insertion_carries_the_same_certificate() {
             let Some(gram) = random_gram(&mut rng, n, 5) else {
                 continue;
             };
-            let Ok(reduced) = lll_deep(&gram, Delta::LLL) else {
-                continue;
-            };
-            check_certificate(&gram, &reduced, Delta::LLL);
-            checked += 1;
+            for delta in [Delta::LLL, Delta::STRONG] {
+                let (Ok(ordinary), Ok(deep)) = (lll(&gram, delta), lll_deep(&gram, delta)) else {
+                    continue;
+                };
+                // LLL outputs are not canonical. Compare the independently
+                // checkable contracts, never the returned Gram matrices.
+                check_certificate(&gram, &ordinary, delta);
+                check_certificate(&gram, &deep, delta);
+                assert_eq!(ordinary.gram.det().unwrap(), deep.gram.det().unwrap());
+                checked += 1;
+            }
         }
     }
     assert!(
-        checked > 50,
-        "only {checked} deep reductions were exercised"
+        checked > 100,
+        "only {checked} ordinary/deep pairs were exercised"
     );
 }
 

@@ -311,6 +311,7 @@ trait ReductionObserver {
     fn size_reduction(&mut self, _checked_updates: u64) {}
     fn swaps(&mut self, _count: u64, _update_terms: u64, _checked_updates: u64) {}
     fn deep_insertion(&mut self) {}
+    fn deep_predicate_term(&mut self, _scale_rescaled: bool, _exact_divisions: u64) {}
 }
 
 struct Unobserved;
@@ -343,6 +344,12 @@ pub struct ReductionStats {
     pub swap_update_terms: u64,
     /// Deep insertions.
     pub deep_insertions: u64,
+    /// Exact suffix-sum terms formed by deep-insertion predicates.
+    pub deep_predicate_terms: u64,
+    /// Deep-predicate suffix sums rescaled to a larger common denominator.
+    pub deep_scale_rescalings: u64,
+    /// Exact divisions used to form deep-predicate weights and rescalings.
+    pub deep_exact_divisions: u64,
     /// Full Gram buffers copied.
     pub gram_copies: u64,
     /// Checked operations in factorization and elementary updates.
@@ -389,6 +396,12 @@ impl ReductionObserver for ReductionStats {
 
     fn deep_insertion(&mut self) {
         self.deep_insertions += 1;
+    }
+
+    fn deep_predicate_term(&mut self, scale_rescaled: bool, exact_divisions: u64) {
+        self.deep_predicate_terms += 1;
+        self.deep_scale_rescalings += u64::from(scale_rescaled);
+        self.deep_exact_divisions += exact_divisions;
     }
 }
 
@@ -559,7 +572,7 @@ fn reduce_observed<T: Int, O: ReductionObserver>(
             for j in (0..k).rev() {
                 size_reduce_pair(&mut state, &mut gso, k, j, observer)?;
             }
-            if let Some(target) = deep_insertion_point(&gso, k, delta)? {
+            if let Some(target) = deep_insertion_point(&gso, k, delta, observer)? {
                 state.rotate(k, target, &mut gso)?;
                 observer.deep_insertion();
                 let mut checked_updates = 0u64;
@@ -616,27 +629,30 @@ fn reduce_observed<T: Int, O: ReductionObserver>(
 /// so clearing the denominators with `L = lcm_j(d[j]·d[j+1])` turns the whole
 /// test into one integer comparison. At `i = k-1` it reduces to the ordinary
 /// Lovász condition, which is why deep insertion subsumes the plain swap.
-fn deep_insertion_point<T: Int>(
+fn deep_insertion_point<T: Int, O: ReductionObserver>(
     gso: &Gso<T>,
     k: usize,
     delta: Delta,
+    observer: &mut O,
 ) -> Result<Option<usize>, RangeError> {
     let mut scale = gso.minor(k).try_mul(gso.minor(k + 1))?;
     let last = gso.minor(k + 1);
     let mut sum = last.try_mul(last)?;
+    observer.deep_predicate_term(false, 0);
     let mut target = None;
 
     for i in (0..k).rev() {
         let denominator = gso.minor(i).try_mul(gso.minor(i + 1))?;
         let next_scale = lcm(scale, denominator)?;
-        if next_scale != scale {
+        let scale_rescaled = next_scale != scale;
+        if scale_rescaled {
             sum = sum.try_mul(next_scale.try_div_exact(scale)?)?;
         }
         let weight = next_scale.try_div_exact(denominator)?;
         let numerator = gso.lambda(k, i);
         sum = sum.try_add(numerator.try_mul(numerator)?.try_mul(weight)?)?;
         scale = next_scale;
-
+        observer.deep_predicate_term(scale_rescaled, 1 + u64::from(scale_rescaled));
         let left = narrow::<T>(delta.denominator)?
             .try_mul(gso.minor(i))?
             .try_mul(sum)?;
@@ -652,9 +668,9 @@ fn deep_insertion_point<T: Int>(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "internals")]
-    use super::lll_profiled;
     use super::{Delta, State, gauss, is_reduced, lll, lll_deep};
+    #[cfg(feature = "internals")]
+    use super::{lll_deep_profiled, lll_profiled};
     use crate::basis::{Basis, Gram};
     use crate::error::LatticeError;
     use crate::int::{Int, IntMatrix};
@@ -812,5 +828,22 @@ mod tests {
         assert!(stats.zero_quotients > 0);
         assert!(stats.quotient_divisions >= stats.size_reductions);
         assert!(stats.swap_update_terms > 0);
+    }
+
+    #[cfg(feature = "internals")]
+    #[test]
+    fn profiled_deep_counters_account_for_suffix_arithmetic() {
+        let basis =
+            Basis::<i64>::from_rows(4, 4, &[2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])
+                .unwrap();
+        let gram = basis.gram().unwrap();
+        let (_, stats) = lll_deep_profiled(&gram, Delta::STRONG).unwrap();
+
+        assert!(stats.deep_insertions > 0);
+        assert!(stats.swaps >= stats.deep_insertions);
+        assert_eq!(
+            stats.deep_exact_divisions + stats.iterations,
+            stats.deep_predicate_terms + stats.deep_scale_rescalings
+        );
     }
 }

@@ -4,8 +4,9 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use lattica::Basis;
+use lattica::basis::Gram;
 use lattica::int::{IntMatrix, adjugate, hnf, hnf_mod_det, invariant_factors};
-use lattica::reduce::{Delta, is_reduced, lll, lll_profiled};
+use lattica::reduce::{Delta, Reduced, is_reduced, lll, lll_deep, lll_deep_profiled, lll_profiled};
 
 const DIMENSIONS: [usize; 3] = [8, 16, 24];
 const SAMPLES: usize = 11;
@@ -65,6 +66,165 @@ fn skew_basis(dimension: usize, case: usize, shear_bits: u32) -> Vec<i128> {
         }
     }
     basis
+}
+
+fn insertion_basis(dimension: usize, case: usize, shears: usize) -> Vec<i128> {
+    let mut basis = vec![0i128; dimension * dimension];
+    for row in 0..dimension {
+        let level = 2 - row * 2 / dimension;
+        basis[row * dimension + row] = i128::try_from(level).unwrap();
+    }
+
+    let mut rng = Rng(0x4445_4550_4C4C_4C00
+        ^ u64::try_from(case).unwrap()
+        ^ (u64::try_from(shears).unwrap() << 48));
+    for _ in 0..shears {
+        let target = usize::try_from(rng.next()).unwrap() % (dimension - 1);
+        let source = target + 1 + usize::try_from(rng.next()).unwrap() % (dimension - target - 1);
+        let factor = if rng.next() & 1 == 0 { 1 } else { -1 };
+        let source_row = basis[source * dimension..(source + 1) * dimension].to_vec();
+        for column in 0..dimension {
+            basis[target * dimension + column] += factor * source_row[column];
+        }
+    }
+    basis
+}
+
+fn corpus_fingerprint(bases: &[Gram<i128>]) -> i128 {
+    let mut fingerprint = 0i128;
+    for (case, gram) in bases.iter().enumerate() {
+        for row in 0..gram.dim() {
+            for column in 0..gram.dim() {
+                let index = case
+                    .checked_mul(gram.dim() * gram.dim())
+                    .and_then(|value| value.checked_add(row * gram.dim() + column))
+                    .and_then(|value| value.checked_add(1))
+                    .unwrap();
+                let term = i128::try_from(index)
+                    .unwrap()
+                    .checked_mul(gram.entry(row, column))
+                    .unwrap();
+                fingerprint = fingerprint.checked_add(term).unwrap();
+            }
+        }
+    }
+    fingerprint
+}
+
+fn certificate_holds(original: &Gram<i128>, reduced: &Reduced<i128>, delta: Delta) -> bool {
+    let congruence = reduced
+        .transform
+        .mul(original.as_matrix())
+        .unwrap()
+        .mul(&reduced.transform.transpose().unwrap())
+        .unwrap();
+    is_reduced(&reduced.gram, delta).unwrap()
+        && reduced.gram.det().unwrap() == original.det().unwrap()
+        && reduced.transform.det().unwrap().abs() == 1
+        && &congruence == reduced.gram.as_matrix()
+}
+
+fn benchmark_deep_lll() {
+    for dimension in DIMENSIONS {
+        for (geometry, shears) in [
+            ("insertion_light", dimension / 4),
+            ("insertion_medium", dimension / 2),
+            ("insertion_dense", 3 * dimension / 4),
+        ] {
+            let bases: Vec<_> = (0..16)
+                .map(|case| {
+                    let rows = insertion_basis(dimension, case, shears);
+                    Basis::from_rows(dimension, dimension, &rows)
+                        .unwrap()
+                        .gram()
+                        .unwrap()
+                })
+                .collect();
+            let fingerprint = corpus_fingerprint(&bases);
+
+            let ordinary_outputs: Vec<_> = bases
+                .iter()
+                .map(|gram| lll(gram, Delta::STRONG).unwrap())
+                .collect();
+            let mut deep_outputs = Vec::with_capacity(bases.len());
+            let mut deep_insertions = 0u64;
+            let mut swaps = 0u64;
+            let mut predicate_terms = 0u64;
+            let mut scale_rescalings = 0u64;
+            let mut exact_divisions = 0u64;
+            let mut checked_updates = 0u64;
+            for gram in &bases {
+                let (reduced, stats) = lll_deep_profiled(gram, Delta::STRONG).unwrap();
+                assert!(
+                    stats.deep_insertions > 0,
+                    "{geometry} is not insertion-heavy"
+                );
+                deep_insertions += stats.deep_insertions;
+                swaps += stats.swaps;
+                predicate_terms += stats.deep_predicate_terms;
+                scale_rescalings += stats.deep_scale_rescalings;
+                exact_divisions += stats.deep_exact_divisions;
+                checked_updates += stats.checked_updates;
+                deep_outputs.push(reduced);
+            }
+            assert!(
+                bases
+                    .iter()
+                    .zip(&ordinary_outputs)
+                    .all(|(gram, reduced)| certificate_holds(gram, reduced, Delta::STRONG))
+            );
+            assert!(
+                bases
+                    .iter()
+                    .zip(&deep_outputs)
+                    .all(|(gram, reduced)| certificate_holds(gram, reduced, Delta::STRONG))
+            );
+
+            let ordinary_elapsed = measured(|| {
+                for gram in &bases {
+                    black_box(lll(black_box(gram), Delta::STRONG).unwrap());
+                }
+            });
+            let deep_elapsed = measured(|| {
+                for gram in &bases {
+                    black_box(lll_deep(black_box(gram), Delta::STRONG).unwrap());
+                }
+            });
+            let ordinary_certificate = measured(|| {
+                for (gram, reduced) in bases.iter().zip(&ordinary_outputs) {
+                    black_box(certificate_holds(gram, reduced, Delta::STRONG));
+                }
+            });
+            let deep_certificate = measured(|| {
+                for (gram, reduced) in bases.iter().zip(&deep_outputs) {
+                    black_box(certificate_holds(gram, reduced, Delta::STRONG));
+                }
+            });
+
+            let basis_count = f64::from(u32::try_from(bases.len()).unwrap());
+            for (metric, duration) in [
+                ("lll_ns", ordinary_elapsed),
+                ("lll_deep_ns", deep_elapsed),
+                ("lll_certificate_ns", ordinary_certificate),
+                ("lll_deep_certificate_ns", deep_certificate),
+            ] {
+                println!(
+                    "{metric},{dimension},{geometry},{:.2},{fingerprint}",
+                    duration.as_secs_f64() * 1e9 / basis_count
+                );
+            }
+            for (metric, value) in [
+                ("lll_deep_insertions", deep_insertions),
+                ("lll_deep_swaps", swaps),
+                ("lll_deep_predicate_terms", predicate_terms),
+                ("lll_deep_scale_rescalings", scale_rescalings),
+                ("lll_deep_exact_divisions", exact_divisions),
+                ("lll_deep_checked_updates", checked_updates),
+            ] {
+                println!("{metric},{dimension},{geometry},{value},{fingerprint}");
+            }
+        }
+    }
 }
 
 fn benchmark_lll() {
@@ -194,5 +354,6 @@ fn benchmark_algebra() {
 
 fn main() {
     benchmark_lll();
+    benchmark_deep_lll();
     benchmark_algebra();
 }
