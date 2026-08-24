@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 use lattica::Basis;
 use lattica::basis::Gram;
 use lattica::int::{IntMatrix, adjugate, hnf, hnf_mod_det, invariant_factors};
-use lattica::reduce::{Delta, Reduced, is_reduced, lll, lll_deep, lll_deep_profiled, lll_profiled};
+use lattica::reduce::{
+    Delta, Reduced, ReductionStats, is_reduced, lll, lll_deep, lll_deep_profiled, lll_profiled,
+};
 
 const DIMENSIONS: [usize; 3] = [8, 16, 24];
 const SAMPLES: usize = 11;
@@ -124,6 +126,30 @@ fn certificate_holds(original: &Gram<i128>, reduced: &Reduced<i128>, delta: Delt
         && &congruence == reduced.gram.as_matrix()
 }
 
+fn profile_deep(bases: &[Gram<i128>], geometry: &str) -> (Vec<Reduced<i128>>, ReductionStats) {
+    let mut outputs = Vec::with_capacity(bases.len());
+    let mut total = ReductionStats::default();
+    for gram in bases {
+        let (reduced, stats) = lll_deep_profiled(gram, Delta::STRONG).unwrap();
+        assert!(
+            stats.deep_insertions > 0,
+            "{geometry} is not insertion-heavy"
+        );
+        total.deep_insertions += stats.deep_insertions;
+        total.swaps += stats.swaps;
+        total.deep_predicate_terms += stats.deep_predicate_terms;
+        total.deep_scale_rescalings += stats.deep_scale_rescalings;
+        total.deep_exact_divisions += stats.deep_exact_divisions;
+        total.checked_updates += stats.checked_updates;
+        total.deep_max_denominator_bits = total
+            .deep_max_denominator_bits
+            .max(stats.deep_max_denominator_bits);
+        total.deep_max_scale_bits = total.deep_max_scale_bits.max(stats.deep_max_scale_bits);
+        outputs.push(reduced);
+    }
+    (outputs, total)
+}
+
 fn benchmark_deep_lll() {
     for dimension in DIMENSIONS {
         for (geometry, shears) in [
@@ -146,27 +172,7 @@ fn benchmark_deep_lll() {
                 .iter()
                 .map(|gram| lll(gram, Delta::STRONG).unwrap())
                 .collect();
-            let mut deep_outputs = Vec::with_capacity(bases.len());
-            let mut deep_insertions = 0u64;
-            let mut swaps = 0u64;
-            let mut predicate_terms = 0u64;
-            let mut scale_rescalings = 0u64;
-            let mut exact_divisions = 0u64;
-            let mut checked_updates = 0u64;
-            for gram in &bases {
-                let (reduced, stats) = lll_deep_profiled(gram, Delta::STRONG).unwrap();
-                assert!(
-                    stats.deep_insertions > 0,
-                    "{geometry} is not insertion-heavy"
-                );
-                deep_insertions += stats.deep_insertions;
-                swaps += stats.swaps;
-                predicate_terms += stats.deep_predicate_terms;
-                scale_rescalings += stats.deep_scale_rescalings;
-                exact_divisions += stats.deep_exact_divisions;
-                checked_updates += stats.checked_updates;
-                deep_outputs.push(reduced);
-            }
+            let (deep_outputs, stats) = profile_deep(&bases, geometry);
             assert!(
                 bases
                     .iter()
@@ -214,12 +220,17 @@ fn benchmark_deep_lll() {
                 );
             }
             for (metric, value) in [
-                ("lll_deep_insertions", deep_insertions),
-                ("lll_deep_swaps", swaps),
-                ("lll_deep_predicate_terms", predicate_terms),
-                ("lll_deep_scale_rescalings", scale_rescalings),
-                ("lll_deep_exact_divisions", exact_divisions),
-                ("lll_deep_checked_updates", checked_updates),
+                ("lll_deep_insertions", stats.deep_insertions),
+                ("lll_deep_swaps", stats.swaps),
+                ("lll_deep_predicate_terms", stats.deep_predicate_terms),
+                ("lll_deep_scale_rescalings", stats.deep_scale_rescalings),
+                ("lll_deep_exact_divisions", stats.deep_exact_divisions),
+                ("lll_deep_checked_updates", stats.checked_updates),
+                (
+                    "lll_deep_max_denominator_bits",
+                    stats.deep_max_denominator_bits,
+                ),
+                ("lll_deep_max_scale_bits", stats.deep_max_scale_bits),
             ] {
                 println!("{metric},{dimension},{geometry},{value},{fingerprint}");
             }

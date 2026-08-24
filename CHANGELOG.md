@@ -33,6 +33,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   dimensions 8, 16, and 24. Unstable profiling counts suffix-predicate terms,
   denominator rescalings, and exact divisions; the harness times ordinary LLL,
   deep LLL, and their full certificate checks independently.
+- Deep-insertion predicates reuse an existing exact suffix scale instead of
+  recomputing its GCD and LCM when the next denominator already divides it.
+  The insertion-heavy corpora improve by 14.9% to 19.9% with unchanged
+  decisions, checked overflow boundaries, operation counts, and ordinary LLL.
 
 ## [0.2.0]
 

@@ -37,7 +37,7 @@
 use crate::basis::{Basis, Gram};
 use crate::error::{LatticeError, RangeError, ReduceError};
 use crate::gso::Gso;
-use crate::int::{Int, IntMatrix, div_nearest, lcm};
+use crate::int::{Int, IntMatrix, div_nearest, gcd};
 
 /// The LLL reduction parameter, as an exact rational in `(1/4, 1)`.
 ///
@@ -312,6 +312,7 @@ trait ReductionObserver {
     fn swaps(&mut self, _count: u64, _update_terms: u64, _checked_updates: u64) {}
     fn deep_insertion(&mut self) {}
     fn deep_predicate_term(&mut self, _scale_rescaled: bool, _exact_divisions: u64) {}
+    fn deep_denominator<T: Int>(&mut self, _denominator: T, _scale: T) {}
 }
 
 struct Unobserved;
@@ -350,6 +351,10 @@ pub struct ReductionStats {
     pub deep_scale_rescalings: u64,
     /// Exact divisions used to form deep-predicate weights and rescalings.
     pub deep_exact_divisions: u64,
+    /// Largest deep-predicate denominator width in bits.
+    pub deep_max_denominator_bits: u64,
+    /// Largest deep-predicate common-scale width in bits.
+    pub deep_max_scale_bits: u64,
     /// Full Gram buffers copied.
     pub gram_copies: u64,
     /// Checked operations in factorization and elementary updates.
@@ -402,6 +407,13 @@ impl ReductionObserver for ReductionStats {
         self.deep_predicate_terms += 1;
         self.deep_scale_rescalings += u64::from(scale_rescaled);
         self.deep_exact_divisions += exact_divisions;
+    }
+
+    fn deep_denominator<T: Int>(&mut self, denominator: T, scale: T) {
+        let denominator_bits = u64::from(i128::BITS - denominator.widen().leading_zeros());
+        let scale_bits = u64::from(i128::BITS - scale.widen().leading_zeros());
+        self.deep_max_denominator_bits = self.deep_max_denominator_bits.max(denominator_bits);
+        self.deep_max_scale_bits = self.deep_max_scale_bits.max(scale_bits);
     }
 }
 
@@ -643,15 +655,33 @@ fn deep_insertion_point<T: Int, O: ReductionObserver>(
 
     for i in (0..k).rev() {
         let denominator = gso.minor(i).try_mul(gso.minor(i + 1))?;
-        let next_scale = lcm(scale, denominator)?;
-        let scale_rescaled = next_scale != scale;
+        // The carried suffix scale usually already contains this denominator.
+        // Reuse that exact quotient instead of recomputing the same gcd and
+        // lcm. Otherwise, for g = gcd(scale, denominator),
+        //
+        // L / scale       = denominator / g
+        // L / denominator = scale / g
+        //
+        // and L = (scale / g) * denominator, the same checked multiplication
+        // order as `lcm(scale, denominator)`.
+        let (next_scale, scale_rescaled, rescale_factor, weight) =
+            match scale.try_div_exact(denominator) {
+                Ok(weight) => (scale, false, T::ONE, weight),
+                Err(RangeError::InexactDivision) => {
+                    let common = gcd(scale, denominator)?;
+                    let rescale_factor = denominator.try_div_exact(common)?;
+                    let weight = scale.try_div_exact(common)?;
+                    (weight.try_mul(denominator)?, true, rescale_factor, weight)
+                }
+                Err(error) => return Err(error),
+            };
         if scale_rescaled {
-            sum = sum.try_mul(next_scale.try_div_exact(scale)?)?;
+            sum = sum.try_mul(rescale_factor)?;
         }
-        let weight = next_scale.try_div_exact(denominator)?;
         let numerator = gso.lambda(k, i);
         sum = sum.try_add(numerator.try_mul(numerator)?.try_mul(weight)?)?;
         scale = next_scale;
+        observer.deep_denominator(denominator, scale);
         observer.deep_predicate_term(scale_rescaled, 1 + u64::from(scale_rescaled));
         let left = narrow::<T>(delta.denominator)?
             .try_mul(gso.minor(i))?
@@ -668,12 +698,16 @@ fn deep_insertion_point<T: Int, O: ReductionObserver>(
 
 #[cfg(test)]
 mod tests {
-    use super::{Delta, State, gauss, is_reduced, lll, lll_deep};
+    use super::{
+        Delta, State, Unobserved, deep_insertion_point, div_nearest, gauss, is_reduced, lll,
+        lll_deep, narrow,
+    };
     #[cfg(feature = "internals")]
     use super::{lll_deep_profiled, lll_profiled};
     use crate::basis::{Basis, Gram};
-    use crate::error::LatticeError;
-    use crate::int::{Int, IntMatrix};
+    use crate::error::{LatticeError, RangeError};
+    use crate::gso::Gso;
+    use crate::int::{Int, IntMatrix, lcm};
     use crate::named::{a_n, d_n, e8};
 
     #[test]
@@ -814,6 +848,85 @@ mod tests {
         overflowing_state_subtraction_is_atomic::<i128>(i128::MAX);
     }
 
+    fn deep_insertion_point_lcm<T: Int>(
+        gso: &Gso<T>,
+        k: usize,
+        delta: Delta,
+    ) -> Result<Option<usize>, RangeError> {
+        let mut scale = gso.minor(k).try_mul(gso.minor(k + 1))?;
+        let last = gso.minor(k + 1);
+        let mut sum = last.try_mul(last)?;
+        let mut target = None;
+
+        for i in (0..k).rev() {
+            let denominator = gso.minor(i).try_mul(gso.minor(i + 1))?;
+            let next_scale = lcm(scale, denominator)?;
+            if next_scale != scale {
+                sum = sum.try_mul(next_scale.try_div_exact(scale)?)?;
+            }
+            let weight = next_scale.try_div_exact(denominator)?;
+            let numerator = gso.lambda(k, i);
+            sum = sum.try_add(numerator.try_mul(numerator)?.try_mul(weight)?)?;
+            scale = next_scale;
+
+            let left = narrow::<T>(delta.denominator)?
+                .try_mul(gso.minor(i))?
+                .try_mul(sum)?;
+            let right = narrow::<T>(delta.numerator)?
+                .try_mul(gso.minor(i + 1))?
+                .try_mul(scale)?;
+            if left < right {
+                target = Some(i);
+            }
+        }
+        Ok(target)
+    }
+
+    fn suffix_reuse_matches_lcm_oracle<T: Int>() {
+        let mut rng = 0x4445_4550_4C4C_4C00u64;
+        for n in 2..=6 {
+            for _ in 0..32 {
+                let mut entries = vec![T::ZERO; n * n];
+                for row in 0..n {
+                    entries[row * n + row] = T::ONE;
+                    for column in 0..row {
+                        rng ^= rng << 13;
+                        rng ^= rng >> 7;
+                        rng ^= rng << 17;
+                        let value = i8::try_from(rng % 5).unwrap() - 2;
+                        entries[row * n + column] = T::from_i8(value);
+                    }
+                }
+                let gram = Basis::from_rows(n, n, &entries).unwrap().gram().unwrap();
+                let gso = Gso::new(&gram).unwrap();
+                for delta in [Delta::LLL, Delta::STRONG] {
+                    for k in 1..n {
+                        let expected = deep_insertion_point_lcm(&gso, k, delta);
+                        let actual = deep_insertion_point(&gso, k, delta, &mut Unobserved);
+                        assert_eq!(actual, expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn suffix_reuse_matches_lcm_oracle_at_every_width() {
+        suffix_reuse_matches_lcm_oracle::<i32>();
+        suffix_reuse_matches_lcm_oracle::<i64>();
+        suffix_reuse_matches_lcm_oracle::<i128>();
+    }
+
+    #[test]
+    fn signed_minimum_quotient_stays_on_the_checked_route() {
+        assert!(i32::MIN.try_abs().is_err());
+        assert_eq!(div_nearest(i32::MIN, i32::MAX), Ok(-1));
+        assert!(i64::MIN.try_abs().is_err());
+        assert_eq!(div_nearest(i64::MIN, i64::MAX), Ok(-1));
+        assert!(i128::MIN.try_abs().is_err());
+        assert_eq!(div_nearest(i128::MIN, i128::MAX), Ok(-1));
+    }
+
     #[cfg(feature = "internals")]
     #[test]
     fn profiled_quotient_counters_partition_checks() {
@@ -840,10 +953,17 @@ mod tests {
         let (_, stats) = lll_deep_profiled(&gram, Delta::STRONG).unwrap();
 
         assert!(stats.deep_insertions > 0);
+        assert_eq!(
+            stats.size_reduction_checks,
+            stats.zero_quotients + stats.quotient_divisions
+        );
+        assert!(stats.zero_quotients > 0);
         assert!(stats.swaps >= stats.deep_insertions);
         assert_eq!(
             stats.deep_exact_divisions + stats.iterations,
             stats.deep_predicate_terms + stats.deep_scale_rescalings
         );
+        assert!(stats.deep_max_denominator_bits > 0);
+        assert!(stats.deep_max_scale_bits >= stats.deep_max_denominator_bits);
     }
 }

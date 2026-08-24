@@ -377,6 +377,64 @@ Increasing shear density raises both deep insertions and denominator
 rescalings, selecting the suffix predicate arithmetic as the next isolated
 measurement target.
 
+## Deep suffix denominator reuse
+
+Command:
+
+```sh
+taskset -c 2 cargo bench --bench optimization --features internals
+taskset -c 2 cargo bench --bench fplll_compare
+```
+
+Measured 2026-08-24 with interleaved release binaries on CPU 2. For each
+suffix term, the carried common scale already contains the incoming
+denominator in 93.5% to 99.6% of cases. The selected recurrence takes that
+exact quotient directly. When the denominator does not divide the scale, it
+uses `g = gcd(scale, denominator)` and the identities
+`L / scale = denominator / g` and `L / denominator = scale / g`. It forms
+`L` as `(scale / g) * denominator`, preserving the former checked LCM
+multiplication and overflow boundary.
+
+The largest incoming denominator and common scale in each corpus are:
+
+| Dimension | Geometry | Divisible suffixes | Maximum denominator | Maximum scale |
+| ---: | :--- | ---: | ---: | ---: |
+| 8 | light | 99.6% | 19 bits | 20 bits |
+| 8 | medium | 97.8% | 21 bits | 25 bits |
+| 8 | dense | 93.5% | 21 bits | 29 bits |
+| 16 | light | 99.6% | 37 bits | 39 bits |
+| 16 | medium | 98.0% | 39 bits | 50 bits |
+| 16 | dense | 93.9% | 41 bits | 59 bits |
+| 24 | light | 99.6% | 53 bits | 57 bits |
+| 24 | medium | 97.1% | 58 bits | 81 bits |
+| 24 | dense | 94.3% | 62 bits | 95 bits |
+
+Three interleaved process runs, each using 11 internal samples, produced:
+
+| Dimension | Geometry | Before | After | Reduction |
+| ---: | :--- | ---: | ---: | ---: |
+| 8 | light | 5.234 µs | 4.361 µs | 16.7% |
+| 8 | medium | 6.121 µs | 4.904 µs | 19.9% |
+| 8 | dense | 6.613 µs | 5.518 µs | 16.6% |
+| 16 | light | 38.101 µs | 31.229 µs | 18.0% |
+| 16 | medium | 41.929 µs | 34.595 µs | 17.5% |
+| 16 | dense | 49.940 µs | 40.808 µs | 18.3% |
+| 24 | light | 128.404 µs | 104.342 µs | 18.7% |
+| 24 | medium | 140.852 µs | 119.840 µs | 14.9% |
+| 24 | dense | 156.919 µs | 132.372 µs | 15.6% |
+
+Corpus fingerprints, insertions, adjacent swaps, predicate terms, rescalings,
+exact divisions, and checked updates are unchanged. A width-generic
+differential compares every candidate position with the former LCM recurrence
+at `i32`, `i64`, and `i128`; randomized full certificates independently check
+the returned reductions. The signed-minimum coefficient still bypasses the
+absolute-value filter and enters checked nearest division.
+
+Seven interleaved insertion-corpus runs put ordinary LLL movement between
+-1.9% and +1.6%, without a broad direction. Three comparison-corpus runs moved
+from `4.847/45.004/160.253 µs` to `4.913/44.814/160.288 µs` at dimensions
+8/16/24. Both are noise boundaries rather than an ordinary-path regression.
+
 ## Comparison target selection
 
 fplll remains the useful general-CVP target: its in-process public API exposes
