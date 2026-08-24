@@ -141,19 +141,19 @@ impl EnumerationObserver for Unobserved {}
 
 impl<O: EnumerationObserver> EnumerationObserver for &mut O {
     fn node(&mut self) {
-        (**self).node()
+        (**self).node();
     }
 
     fn leaf(&mut self) {
-        (**self).leaf()
+        (**self).leaf();
     }
 
     fn tail_term(&mut self) {
-        (**self).tail_term()
+        (**self).tail_term();
     }
 
     fn direct_norm(&mut self) {
-        (**self).direct_norm()
+        (**self).direct_norm();
     }
 }
 
@@ -297,6 +297,11 @@ pub fn census<T: Int>(gram: &Gram<T>, budget: u64) -> Result<Census<T>, DecodeEr
 /// # Errors
 ///
 /// As [`census`].
+///
+/// # Panics
+///
+/// Never: the only `expect` is guarded by the zero-dimension early return
+/// immediately above it.
 #[cfg(feature = "internals")]
 pub fn census_profiled<T: Int>(
     gram: &Gram<T>,
