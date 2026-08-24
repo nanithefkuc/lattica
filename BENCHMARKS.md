@@ -625,6 +625,19 @@ Node, leaf, vector-count, and allocation figures are unchanged; emitted
 vectors and norms are pinned by the closed-form shell oracles and the
 per-vector differential.
 
+Two further candidates were measured or profiled and not selected. A
+prepared enumerator reusing factorization buffers would save the 9-to-13
+per-call allocations and roughly one factorization of setup; after the
+carried norm that setup is under 10% of even the smallest cell (`Gso::new`
+on the same eight-dimensional Gram measures about 0.8 us against a 13.3 us
+census), it approaches zero on the large shells, and no crate consumer
+repeats censuses over one lattice today — the prepared type fails its own
+admission test. An iterative rewrite of the recursion was also rejected:
+the post-change profile shows the walk dominated by `descend`'s own checked
+arithmetic (37% of cycles, plus 11% in `i128` software division for the
+bound and norm divisions), with no measurable call or stack overhead
+signature.
+
 ## Comparison target selection
 
 fplll remains the useful general-CVP target: its in-process public API exposes
