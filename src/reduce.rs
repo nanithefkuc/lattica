@@ -307,8 +307,9 @@ trait ReductionObserver {
     fn gram_copy(&mut self) {}
     fn factorization(&mut self, _dimension: usize) {}
     fn iteration(&mut self) {}
+    fn quotient_check(&mut self, _zero_proved: bool) {}
     fn size_reduction(&mut self, _checked_updates: u64) {}
-    fn swaps(&mut self, _count: u64, _checked_updates: u64) {}
+    fn swaps(&mut self, _count: u64, _update_terms: u64, _checked_updates: u64) {}
     fn deep_insertion(&mut self) {}
 }
 
@@ -319,8 +320,8 @@ impl ReductionObserver for Unobserved {}
 /// Internal operation counters for exact basis reduction benchmarks.
 ///
 /// `checked_updates` counts checked integer operations in factorization and
-/// elementary state recurrences. Predicate and quotient arithmetic is reported
-/// separately by wall time rather than folded into this partial count.
+/// elementary state recurrences. Quotient and adjacent-swap counters expose
+/// the work that those recurrences do not distinguish.
 #[cfg(feature = "internals")]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReductionStats {
@@ -328,10 +329,18 @@ pub struct ReductionStats {
     pub factorizations: u64,
     /// Completed reduction-loop iterations.
     pub iterations: u64,
+    /// Size-reduction coefficients examined.
+    pub size_reduction_checks: u64,
+    /// Coefficients proved to have a zero nearest quotient without division.
+    pub zero_quotients: u64,
+    /// Coefficients that entered checked nearest division.
+    pub quotient_divisions: u64,
     /// Nonzero size reductions.
     pub size_reductions: u64,
     /// Adjacent basis swaps.
     pub swaps: u64,
+    /// Later GSO coefficients updated across adjacent swaps.
+    pub swap_update_terms: u64,
     /// Deep insertions.
     pub deep_insertions: u64,
     /// Full Gram buffers copied.
@@ -358,13 +367,23 @@ impl ReductionObserver for ReductionStats {
         self.iterations += 1;
     }
 
+    fn quotient_check(&mut self, zero_proved: bool) {
+        self.size_reduction_checks += 1;
+        if zero_proved {
+            self.zero_quotients += 1;
+        } else {
+            self.quotient_divisions += 1;
+        }
+    }
+
     fn size_reduction(&mut self, checked_updates: u64) {
         self.size_reductions += 1;
         self.checked_updates += checked_updates;
     }
 
-    fn swaps(&mut self, count: u64, checked_updates: u64) {
+    fn swaps(&mut self, count: u64, update_terms: u64, checked_updates: u64) {
         self.swaps += count;
+        self.swap_update_terms += update_terms;
         self.checked_updates += checked_updates;
     }
 
@@ -496,9 +515,11 @@ fn size_reduce_pair<T: Int, O: ReductionObserver>(
         // `2 * magnitude <= denominator` without overflowing the product.
         // In that case the nearest quotient is zero, including exact ties.
         if magnitude <= denominator.try_sub(magnitude)? {
+            observer.quotient_check(true);
             return Ok(());
         }
     }
+    observer.quotient_check(false);
     let quotient = div_nearest(coefficient, denominator)?;
     let state_updates = state.subtract(target, source, quotient)?;
     gso.size_reduce(target, source, quotient)?;
@@ -535,11 +556,15 @@ fn reduce_observed<T: Int, O: ReductionObserver>(
                 state.rotate(k, target, &mut gso)?;
                 observer.deep_insertion();
                 let mut checked_updates = 0u64;
+                let mut update_terms = 0u64;
                 for swapped in (target + 1)..=k {
-                    checked_updates += 4 + 8 * u64::try_from(n - swapped - 1).unwrap_or(u64::MAX);
+                    let later = u64::try_from(n - swapped - 1).unwrap_or(u64::MAX);
+                    checked_updates += 4 + 8 * later;
+                    update_terms += 2 * later;
                 }
                 observer.swaps(
                     u64::try_from(k - target).unwrap_or(u64::MAX),
+                    update_terms,
                     checked_updates,
                 );
                 k = target.max(1);
@@ -561,7 +586,8 @@ fn reduce_observed<T: Int, O: ReductionObserver>(
         } else {
             state.swap(k - 1, k);
             gso.swap_adjacent(k)?;
-            observer.swaps(1, 4 + 8 * u64::try_from(n - k - 1).unwrap_or(u64::MAX));
+            let later = u64::try_from(n - k - 1).unwrap_or(u64::MAX);
+            observer.swaps(1, 2 * later, 4 + 8 * later);
             k = (k - 1).max(1);
         }
     }
@@ -619,8 +645,10 @@ fn deep_insertion_point<T: Int>(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "internals")]
+    use super::lll_profiled;
     use super::{Delta, gauss, is_reduced, lll, lll_deep};
-    use crate::basis::Gram;
+    use crate::basis::{Basis, Gram};
     use crate::error::LatticeError;
     use crate::named::{a_n, d_n, e8};
 
@@ -716,5 +744,20 @@ mod tests {
     #[test]
     fn gauss_requires_two_dimensions() {
         assert!(gauss(&a_n::<i64>(3).unwrap()).is_err());
+    }
+    #[cfg(feature = "internals")]
+    #[test]
+    fn profiled_quotient_counters_partition_checks() {
+        let basis = Basis::<i64>::from_rows(3, 3, &[1, 10, 0, 0, 1, 10, 0, 0, 1]).unwrap();
+        let gram = basis.gram().unwrap();
+        let (_, stats) = lll_profiled(&gram, Delta::STRONG).unwrap();
+
+        assert_eq!(
+            stats.size_reduction_checks,
+            stats.zero_quotients + stats.quotient_divisions
+        );
+        assert!(stats.zero_quotients > 0);
+        assert!(stats.quotient_divisions >= stats.size_reductions);
+        assert!(stats.swap_update_terms > 0);
     }
 }

@@ -201,6 +201,42 @@ Factorization, nonzero size-reduction, swap, iteration, Gram-copy, and
 checked-update counts were unchanged. The randomized exact-certificate suite
 continued to pass.
 
+## Reduction observability baseline
+
+Command:
+
+```sh
+taskset -c 2 cargo bench --bench optimization --features internals
+taskset -c 2 cargo bench --bench fplll_compare
+```
+
+Measured 2026-08-24 after the exact zero-quotient filter. The timed
+`optimization` path now calls ordinary `lll`; one untimed profiled reduction
+per geometry supplies unstable operation counters. Counter collection therefore
+does not distort the public-path latency that future changes compare.
+
+| Dimension | Shear bits | LLL | Checks | Zero proofs | Divisions | Reductions | Swaps | Swap terms |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 | 2 | 3.690 µs | 63 | 45 | 18 | 18 | 9 | 56 |
+| 8 | 4 | 4.577 µs | 109 | 84 | 25 | 25 | 19 | 104 |
+| 8 | 6 | 4.789 µs | 116 | 82 | 34 | 34 | 20 | 104 |
+| 16 | 2 | 17.897 µs | 541 | 513 | 28 | 28 | 58 | 898 |
+| 16 | 4 | 20.953 µs | 587 | 525 | 62 | 62 | 63 | 956 |
+| 16 | 6 | 21.785 µs | 664 | 593 | 71 | 71 | 68 | 952 |
+| 24 | 2 | 46.103 µs | 846 | 762 | 84 | 84 | 48 | 1,068 |
+| 24 | 4 | 50.049 µs | 854 | 795 | 59 | 59 | 48 | 1,052 |
+| 24 | 6 | 51.655 µs | 860 | 797 | 63 | 63 | 49 | 1,086 |
+
+For every geometry, `checks == zero proofs + divisions`, and every entered
+division produces one nonzero size reduction. The exact filter avoids 70.7% to
+77.1% of quotient divisions at dimension 8 and 89.3% to 94.8% at dimensions 16
+and 24. Existing factorization, reduction, swap, iteration, Gram-copy, and
+checked-update counts remain unchanged.
+
+The median of three standard `fplll_compare` runs was `5.144/49.854/177.207 µs`
+at dimensions 8/16/24. This is the ordinary-LLL baseline for the contiguous
+transactional state-update pass.
+
 ## Comparison target selection
 
 fplll remains the useful general-CVP target: its in-process public API exposes

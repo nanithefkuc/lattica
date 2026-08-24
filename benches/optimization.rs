@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use lattica::Basis;
 use lattica::int::{IntMatrix, adjugate, hnf, hnf_mod_det, invariant_factors};
-use lattica::reduce::{Delta, is_reduced, lll_profiled};
+use lattica::reduce::{Delta, is_reduced, lll, lll_profiled};
 
 const DIMENSIONS: [usize; 3] = [8, 16, 24];
 const SAMPLES: usize = 11;
@@ -88,13 +88,13 @@ fn benchmark_lll() {
 
             let elapsed = measured(|| {
                 for gram in &bases {
-                    black_box(lll_profiled(black_box(gram), Delta::STRONG).unwrap());
+                    black_box(lll(black_box(gram), Delta::STRONG).unwrap());
                 }
             });
             let (_, stats) = lll_profiled(&bases[0], Delta::STRONG).unwrap();
             let certificate = measured(|| {
                 for gram in &bases {
-                    let (reduced, _) = lll_profiled(gram, Delta::STRONG).unwrap();
+                    let reduced = lll(gram, Delta::STRONG).unwrap();
                     black_box(is_reduced(&reduced.gram, Delta::STRONG).unwrap());
                     black_box(reduced.gram.det().unwrap());
                     black_box(reduced.transform.det().unwrap());
@@ -116,8 +116,24 @@ fn benchmark_lll() {
                 stats.size_reductions
             );
             println!(
+                "lll_size_reduction_checks,{dimension},shear_{shear_bits},{},{fingerprint}",
+                stats.size_reduction_checks
+            );
+            println!(
+                "lll_zero_quotients,{dimension},shear_{shear_bits},{},{fingerprint}",
+                stats.zero_quotients
+            );
+            println!(
+                "lll_quotient_divisions,{dimension},shear_{shear_bits},{},{fingerprint}",
+                stats.quotient_divisions
+            );
+            println!(
                 "lll_swaps,{dimension},shear_{shear_bits},{},{fingerprint}",
                 stats.swaps
+            );
+            println!(
+                "lll_swap_update_terms,{dimension},shear_{shear_bits},{},{fingerprint}",
+                stats.swap_update_terms
             );
             println!(
                 "lll_iterations,{dimension},shear_{shear_bits},{},{fingerprint}",

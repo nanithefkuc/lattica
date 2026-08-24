@@ -17,7 +17,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   an overflow-safe integer comparison before checked division. The post-lazy
   comparison corpus improves by another 12.3% to 12.7% without changing
   reduction operation counts or certificates.
-
+- Unstable reduction profiling now partitions coefficient checks into exact
+  zero proofs and checked divisions and counts later GSO terms touched by
+  adjacent swaps. The optimization harness times ordinary `lll` separately
+  from its one profiled counter sample.
 
 ## [0.2.0]
 
