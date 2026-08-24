@@ -638,6 +638,42 @@ arithmetic (37% of cycles, plus 11% in `i128` software division for the
 bound and norm divisions), with no measurable call or stack overhead
 signature.
 
+## Relevant-vector stage baseline
+
+Command:
+
+```sh
+taskset -c 2 cargo bench --bench optimization --features internals
+```
+
+Measured 2026-08-24 on the same machine and toolchain. The relevant-vector
+corpus proves published facet counts before timing — `2n` for `Z^n`,
+`n(n+1)` roots for `A_n`, `2n(n−1)` roots for `D_n`, 240 roots for E8 — then
+reports the public call, a counting-allocator total, and unstable stage
+timings that separate parity-representative radius evaluation from the
+enumeration walk and from final output materialization. Dimensions stop at
+12: at 14 the walk takes seconds, and 16 exceeds the default node budget,
+which is the exponential state count the dimension cap exists to name.
+
+| Dimension | Geometry | Total | Setup | Walk | Finalize | Allocations |
+| ---: | :--- | ---: | ---: | ---: | ---: | ---: |
+| 8 | zn | 1.263 ms | 36.7 us | 1.335 ms | 2.1 us | 10,883 |
+| 8 | a_n | 666.8 us | 30.9 us | 602.7 us | 9.9 us | 5,234 |
+| 8 | d_n | 1.604 ms | 29.2 us | 1.515 ms | 12.9 us | 7,362 |
+| 8 | e8 | 1.836 ms | 36.4 us | 1.576 ms | 32.7 us | 7,935 |
+| 10 | zn | 19.53 ms | 188 us | 20.25 ms | 4.2 us | 105,558 |
+| 10 | a_n | 8.42 ms | 168 us | 7.75 ms | 25.3 us | 43,515 |
+| 10 | d_n | 25.82 ms | 177 us | 25.07 ms | 57.0 us | 60,721 |
+| 12 | zn | 292.8 ms | 902 us | 291.9 ms | 14.2 us | 1,015,307 |
+| 12 | a_n | 120.3 ms | 829 us | 111.3 ms | 49.6 us | 367,963 |
+| 12 | d_n | 435.2 ms | 844 us | 437.5 ms | 75.9 us | 494,623 |
+
+Radius evaluation is 0.2% to 3% of every cell, and materialization is
+negligible; the coset-classification walk dominates completely. Allocations
+track emissions — `Z^12` performs over one million allocations to report 24
+vectors — because every first-of-coset and tied minimum stores a fresh
+coordinate vector.
+
 ## Comparison target selection
 
 fplll remains the useful general-CVP target: its in-process public API exposes

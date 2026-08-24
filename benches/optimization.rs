@@ -16,6 +16,7 @@ use lattica::reduce::{
     Delta, Reduced, ReductionStats, ReductionWorkspace, is_reduced, lll, lll_deep,
     lll_deep_profiled, lll_profiled,
 };
+use lattica::relevant::relevant_vectors_profiled;
 use lattica::shortvec::{DEFAULT_NODE_BUDGET, for_each_short, for_each_short_profiled};
 
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
@@ -601,10 +602,59 @@ fn benchmark_enumeration() {
     run_enumeration_cell(&e8::<i128>().unwrap(), 2, 240, "e8_radius_2");
 }
 
+/// One relevant-vector corpus cell: prove the published facet count, then
+/// time the public call and record stage splits and allocations.
+fn run_relevant_cell(gram: &Gram<i64>, expected_total: u64, name: &str) {
+    let dimension = gram.dim();
+    let fingerprint = corpus_fingerprint(std::slice::from_ref(gram));
+
+    let (vectors, stats) = relevant_vectors_profiled(gram, 1 << 28).unwrap();
+    let output_len = u64::try_from(vectors.len()).unwrap();
+    assert_eq!(output_len, expected_total, "{name}: facet-count oracle");
+    assert_eq!(stats.output_len, expected_total, "{name}: profiled output");
+
+    let elapsed = measured(|| {
+        black_box(lattica::relevant::relevant_vectors(black_box(gram), 1 << 28).unwrap());
+    });
+    let allocations = allocations_during(|| {
+        black_box(lattica::relevant::relevant_vectors(black_box(gram), 1 << 28).unwrap());
+    });
+
+    for (metric, value) in [
+        ("relevant_ns", format!("{:.2}", elapsed.as_secs_f64() * 1e9)),
+        ("relevant_allocations", allocations.to_string()),
+        ("relevant_masks", stats.masks.to_string()),
+        ("relevant_emissions", stats.emissions.to_string()),
+        ("relevant_coset_resets", stats.coset_resets.to_string()),
+        ("relevant_ties_stored", stats.ties_stored.to_string()),
+        ("relevant_setup_ns", stats.setup_ns.to_string()),
+        ("relevant_walk_ns", stats.walk_ns.to_string()),
+        ("relevant_finalize_ns", stats.finalize_ns.to_string()),
+    ] {
+        println!("{metric},{dimension},{name},{value},{fingerprint}");
+    }
+}
+
+fn benchmark_relevant() {
+    for dimension in [8usize, 10, 12] {
+        let n = u64::try_from(dimension).unwrap();
+        let cells: [(&str, Gram<i64>, u64); 3] = [
+            ("zn", zn(dimension).unwrap(), 2 * n),
+            ("a_n", a_n(dimension).unwrap(), n * (n + 1)),
+            ("d_n", d_n(dimension).unwrap(), 2 * n * (n - 1)),
+        ];
+        for (name, gram, expected) in cells {
+            run_relevant_cell(&gram, expected, name);
+        }
+    }
+    run_relevant_cell(&e8::<i64>().unwrap(), 240, "e8");
+}
+
 fn main() {
     benchmark_lll();
     benchmark_deep_lll();
     benchmark_algebra();
     benchmark_factorization();
     benchmark_enumeration();
+    benchmark_relevant();
 }

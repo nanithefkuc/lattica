@@ -59,6 +59,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   recomputing the quadratic form. The enumeration corpus improves by 12% to
   72%, with every carried norm checked against a direct `O(n²)` oracle in
   tests.
+- Unstable benchmarking now profiles relevant-vector enumeration with
+  per-stage timings and coset-event counters over a named-lattice corpus
+  whose outputs are checked against published facet counts. New fixtures pin
+  the facet counts, opposite pairing, and lexicographic order of the public
+  result.
 
 ## [0.2.0]
 
