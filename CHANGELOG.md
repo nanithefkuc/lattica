@@ -70,6 +70,18 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   by 5.9% to 24.2% while per-call allocations drop by three to four orders
   of magnitude; ties beyond the second are proved irrelevant exactly as
   before.
+- The exact twenty-four-by-twenty-four structure-of-arrays transform now
+  dispatches on x86 v3 hardware at every batch size through a fixed-geometry
+  kernel that keeps twelve output blocks in registers across the row loop.
+  Measured speedups never drop below 2.6x against the portable kernel at any
+  count from one vector upward, reaching 8.6x near the small end; output
+  stays bit-identical across lane boundaries, ragged tails, row-count
+  fallbacks, and backend overrides. Unstable `internals` exposes the portable
+  references and x86 kernels for differential tests and benchmarks.
+- The transform benchmark harness separates coordinate arithmetic from
+  array-of-structures conversion: a transpose-only group times layout work
+  alone and a pipeline group adds it to the fastest candidates, showing an
+  end-to-end AoS win of 2.2x to 2.5x including conversion cost.
 
 ## [0.2.0]
 

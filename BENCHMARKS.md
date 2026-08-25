@@ -12,10 +12,85 @@ Command:
 taskset -c 2 cargo bench --bench kernel --features internals
 ```
 
-Measured 2026-08-12 on an Intel Core Ultra 7 258V, Linux x86-64, with
-`rustc 1.93.0`. Criterion used 100 samples after its standard three-second
-warm-up. Scalar and dispatched cases ran in the same pinned-core harness. The
-shape is a 16-by-16 column-major transform over a structure-of-arrays batch.
+Latest measurement 2026-08-25 on an Intel Core Ultra 7 258V, Linux x86-64,
+with `rustc 1.93.0`. Criterion default settings (100 samples after a
+three-second warm-up), core-pinned, three full rounds of one binary.
+
+Dispatched shapes on x86 v3 hardware:
+
+1. sixteen outputs, any row count, at sixty-four vectors or more — unchanged
+   from the original decision below;
+2. the exact twenty-four-by-twenty-four geometry at every batch size.
+
+### Twenty-four outputs
+
+The twenty-four-output experiments recorded below as unselected used the
+generic column-at-a-time kernel; re-measuring it reproduces their instability.
+Across the three rounds its cells move up to 29% between runs and it loses to
+the scalar kernel below roughly thirty-two vectors. The registered kernel is a
+different design: output columns advance in twelve-column blocks so every
+loaded input chunk feeds twelve output planes, and all twelve accumulators live
+in ymm registers across the full row loop — one input load and twelve
+broadcast/multiply/add triples per chunk-row instead of the generic path's
+per-column accumulator reload. There is still no FMA, and every lane
+accumulates rows in ascending order, so the result stays bit-identical to the
+portable reference; batches smaller than four vectors take the kernel's scalar
+tail, which is also bit-identical.
+
+Medians of the three rounds for the shipped gate (`dispatched` goes through
+`transform_batch_soa`; `avx2_generic` is the old candidate called directly):
+
+| Vectors | Scalar (ns) | Dispatched (ns) | Speedup | Generic (ns) |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 773 / 783 / 783 | 206 / 203 / 208 | 3.8x | 869 / 869 / 869 |
+| 4 | 869 / 901 / 869 | 101 / 104 / 98 | 8.6x | 971 / 1,157 / 972 |
+| 8 | 1,141 / 1,120 / 1,124 | 192 / 194 / 193 | 5.9x | 1,286 / 1,500 / 1,311 |
+| 16 | 1,503 / 1,529 / 1,496 | 371 / 400 / 367 | 3.9x | 2,083 / 2,156 / 1,673 |
+| 32 | 2,554 / 2,587 / 2,543 | 755 / 796 / 749 | 3.3x | 2,420 / 2,907 / 3,025 |
+| 64 | 4,443 / 4,371 / 4,313 | 1,561 / 1,563 / 1,481 | 2.8x | 3,918 / 4,350 / 4,342 |
+| 128 | 8,246 / 8,254 / 8,038 | 3,096 / 3,099 / 3,055 | 2.6x | 6,883 / 8,166 / 8,226 |
+| 257 | 24,128 / 23,036 / 23,285 | 6,883 / 6,683 / 6,698 | 3.5x | 18,411 / 18,031 / 18,473 |
+
+The dispatched win never drops below 2.6x in any round at any count, far
+outside this host's dispersion (scalar cells stay within about 4% across
+rounds except where harness relayout shifted them together with the portable
+reference). That makes the crossover unconditional within the shape: the gate
+checks only `rows == cols == 24` and the selected backend tier. Block-size
+selection inside the design: at 257 vectors block 12 measures 6.70–6.94 us
+against block 8's 7.48–7.68 and block 6's 8.07–8.27, and block 12 ties or
+beats both in every round; an earlier exploratory binary ordered blocks 6 and
+8 oppositely after unrelated code-layout changes, so the choice rests on
+block 12 never measuring worse rather than on a fixed runner-up order. Block 4
+was dominated everywhere and was dropped before the formal rounds.
+
+Stage separation answers the layout question for array-of-structures consumers.
+Converting an AoS batch to SoA planes costs roughly one-tenth of the transform
+it replaces (about 90 ns at eight vectors and 0.46–0.47 us at sixty-four,
+against scalar transforms of 0.67–0.69 and 4.3–4.4 us there). End to end,
+transpose plus dispatched kernel beats the pure scalar array-of-structures
+transform at every count: 0.26–0.28 us against 0.67–0.69 us at eight vectors
+and 9.3–10.0 us against 21.0–21.6 us at 257, a 2.1x to 2.6x win.
+Consumers holding SoA batches see the full 2.6x-or-better column above;
+consumers holding AoS batches still roughly double end-to-end throughput by
+converting once and staying in SoA.
+
+Generated release assembly was inspected: the hot loop holds twelve ymm
+accumulators with one `vmovupd`, twelve `vbroadcastsd`, twelve `vmulpd`, and
+twelve `vaddpd` per row — no FMA, no spills, no division, and slice bounds
+checks hoisted outside the loops. Differential tests pin bit-identical output
+against the portable kernel across lane boundaries, ragged tails (one to
+seventeen, thirty-one, sixty-three to sixty-five, one hundred twenty-seven to
+one hundred twenty-nine, and two hundred fifty-seven vectors), non-square
+row-count fallbacks at twenty-three/twenty-four/twenty-five rows, and backend
+overrides (`SIMD_BACKEND=scalar` and `SIMD_BACKEND=v3`).
+
+This supersedes the twenty-four-output portion of the rejection below; the
+sixteen-output decision and its threshold stand.
+
+### Sixteen outputs (original decision)
+
+Measured 2026-08-12 on the same host. The shape is a 16-by-16 column-major
+transform over a structure-of-arrays batch.
 
 | Vectors | Scalar median | AVX2 dispatched median | Ratio |
 | ---: | ---: | ---: | ---: |
@@ -30,10 +105,13 @@ transforms also lost in measurement, so they remain scalar. The 24-output and
 runs; neither is dispatched. This conservative cutoff avoids turning a feature
 flag into a performance regression.
 
-The AVX2 kernel uses separate multiply and add instructions, not FMA. SIMD lanes
-are independent received vectors and each lane accumulates rows in scalar order;
-differential tests require bit-identical output across 1–65 vectors, odd row
-counts, and scalar tails.
+The AVX2 kernels use separate multiply and add instructions, not FMA. SIMD
+lanes are independent received vectors and each lane accumulates rows in
+scalar order; differential tests require bit-identical output across 1–65
+vectors, odd row counts, and scalar tails.
+
+AArch64 NEON and wider x86 tiers remain unmeasured: no capable hardware or
+canonical `simdispatch`/`archmage` support is available on this host.
 
 ## Optimization corpus
 
@@ -814,6 +892,25 @@ measurement parity with fplll at dimensions 16 and 24. The comparison is
 deliberately not called contract-equivalent: fplll reduces an ambient basis
 without returning the transform, while `lattica` reduces a Gram matrix and
 always returns it.
+
+### Re-measurement (2026-08-25)
+
+Re-ran after rebuilding `target/fplll-compare` from the pinned 5.5.0
+static library: the binary on disk predated the lattice-engine CVP
+extraction and its dimension-24 LLL figure did not match the recorded
+baseline. Three interleaved rounds, fplll and `lattica` alternating on
+CPU 2, each side the median of 11 in-process samples; both sides report
+identical input fingerprints (`202872`/`1230409`/`3738818`).
+
+| Dimension | `lattica` median | fplll median | Faster library |
+| ---: | ---: | ---: | ---: |
+| 8 | 5.121 µs | 14.405 µs | `lattica` 2.81x |
+| 16 | 47.543 µs | 48.800 µs | `lattica` 2.6% (parity) |
+| 24 | 168.883 µs | 167.009 µs | fplll 1.1% (parity) |
+
+The parity conclusion is unchanged: `lattica` is fastest at dimension 8
+and at measurement parity at 16 and 24. The two parity cells sit inside
+this host's identical-binary dispersion.
 
 The general-CVP comparison, its fplll `CVPM_PROVED` miss and Babai-cycle
 reproducers, and their data files moved to `lattice-engine` with the CVP

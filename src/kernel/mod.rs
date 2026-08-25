@@ -5,6 +5,11 @@
 //! independent outputs while every lane accumulates input coordinates in the
 //! same order as the scalar reference. The dispatched result is bit-identical,
 //! not merely numerically close.
+//!
+//! Two shapes dispatch on x86 v3 hardware: any row count of sixteen outputs at
+//! sixty-four vectors or more, and the exact twenty-four-by-twenty-four
+//! geometry at every batch size, where a fixed-geometry kernel carries all
+//! twelve output blocks per pass in registers.
 
 use crate::error::RangeError;
 
@@ -100,6 +105,10 @@ pub fn transform_batch(
 /// accumulates rows in scalar order. The result is therefore bit-identical to
 /// the portable reference across lane boundaries and ragged tails.
 ///
+/// On x86 v3 hardware two shapes dispatch: sixteen outputs at sixty-four
+/// vectors or more, and the exact twenty-four-by-twenty-four geometry at any
+/// batch size. Everything else uses the portable kernel.
+///
 /// # Errors
 ///
 /// [`RangeError::Shape`] for zero matrix geometry or buffer lengths that do not
@@ -135,16 +144,25 @@ pub fn transform_batch_soa(
     }
 
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]
-    if vectors >= 64 && cols == 16 {
+    if matches!(backend(), Backend::V3GfniCrypto | Backend::V3) {
         use archmage::SimdToken;
-        if matches!(backend(), Backend::V3GfniCrypto | Backend::V3) {
-            // Selection remains simdispatch's single source of policy. Summon
-            // only materializes archmage's safe capability token for the tier
-            // already selected; it never chooses or upgrades a backend.
-            if let Some(token) = archmage::X64V3Token::summon() {
-                x86::transform_batch_soa_avx2(token, matrix, cols, vectors, inputs, outputs);
-                return Ok(());
-            }
+        // Selection remains simdispatch's single source of policy. Summon
+        // only materializes archmage's safe capability token for the tier
+        // already selected; it never chooses or upgrades a backend.
+        let token = archmage::X64V3Token::summon();
+        if vectors >= 64
+            && cols == 16
+            && let Some(token) = token
+        {
+            x86::transform_batch_soa_avx2(token, matrix, cols, vectors, inputs, outputs);
+            return Ok(());
+        }
+        if rows == 24
+            && cols == 24
+            && let Some(token) = token
+        {
+            x86::transform_batch_soa_fixed_24_block12(token, matrix, vectors, inputs, outputs);
+            return Ok(());
         }
     }
 
@@ -256,6 +274,17 @@ pub mod internals {
     ) {
         super::transform_batch_soa_scalar(matrix, cols, vectors, inputs, outputs);
     }
+
+    /// Dispatched x86 kernel for arbitrary geometries, exposed so benchmarks
+    /// can time shapes that the public gate does not select.
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    pub use super::x86::transform_batch_soa_avx2 as transform_batch_soa_avx2_generic;
+
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    pub use super::x86::{
+        transform_batch_soa_fixed_24_block6, transform_batch_soa_fixed_24_block8,
+        transform_batch_soa_fixed_24_block12,
+    };
 }
 
 #[cfg(test)]
@@ -328,6 +357,22 @@ mod tests {
                 }
             }
         }
+        // The dispatched fixed geometry and its row-count fallbacks.
+        for rows in [23usize, 24, 25] {
+            for vectors in (1..=17).chain([31, 63, 64, 65, 127, 128, 129, 257]) {
+                let matrix: Vec<f64> = (0..rows * 24)
+                    .map(|i| (f64::from(i as u32) - 17.0) / 32.0)
+                    .collect();
+                let inputs: Vec<f64> = (0..rows * vectors)
+                    .map(|i| (f64::from(i as u32) - 29.0) / 64.0)
+                    .collect();
+                let mut want = vec![0.0; 24 * vectors];
+                let mut got = vec![0.0; 24 * vectors];
+                transform_batch_soa_scalar(&matrix, 24, vectors, &inputs, &mut want);
+                transform_batch_soa(&matrix, rows, 24, vectors, &inputs, &mut got).unwrap();
+                assert_eq!(got, want, "{rows}x24, {vectors} vectors");
+            }
+        }
     }
 
     #[test]
@@ -341,5 +386,47 @@ mod tests {
         let mut soa_out = [7.0; 6];
         assert!(transform_batch_soa(&[1.0; 6], 2, 3, 2, &[1.0; 3], &mut soa_out).is_err());
         assert_eq!(soa_out, [7.0; 6]);
+    }
+
+    #[cfg(all(feature = "simd", feature = "internals", target_arch = "x86_64"))]
+    mod fixed_24 {
+        use super::transform_batch_soa_scalar;
+        use crate::kernel::internals::{
+            transform_batch_soa_fixed_24_block6, transform_batch_soa_fixed_24_block8,
+            transform_batch_soa_fixed_24_block12,
+        };
+        use archmage::{SimdToken, X64V3Token};
+
+        fn matrix() -> Vec<f64> {
+            (0u32..24 * 24)
+                .map(|i| (f64::from(i) - 287.0) / 64.0)
+                .collect()
+        }
+
+        fn inputs(vectors: usize) -> Vec<f64> {
+            (0..24 * vectors)
+                .map(|i| (f64::from(u32::try_from(i % 251).unwrap()) - 125.0) / 16.0)
+                .collect()
+        }
+
+        #[test]
+        fn fixed_kernels_are_bit_identical_across_lane_boundaries() {
+            let token = X64V3Token::summon().expect("this host dispatches x86 v3");
+            for vectors in (1..=17).chain([31, 63, 64, 65, 127, 128, 129, 257]) {
+                let matrix = matrix();
+                let inputs = inputs(vectors);
+                let mut want = vec![0.0; 24 * vectors];
+                transform_batch_soa_scalar(&matrix, 24, vectors, &inputs, &mut want);
+                let mut got = vec![0.0; 24 * vectors];
+                transform_batch_soa_fixed_24_block12(token, &matrix, vectors, &inputs, &mut got);
+                assert_eq!(got, want, "block12, {vectors} vectors");
+                got.fill(0.0);
+                transform_batch_soa_fixed_24_block6(token, &matrix, vectors, &inputs, &mut got);
+                assert_eq!(got, want, "block6, {vectors} vectors");
+                got.fill(0.0);
+                transform_batch_soa_fixed_24_block8(token, &matrix, vectors, &inputs, &mut got);
+                assert_eq!(got, want, "block8, {vectors} vectors");
+            }
+        }
     }
 }
