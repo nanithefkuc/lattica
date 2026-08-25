@@ -690,7 +690,6 @@ mod tests {
     #[test]
     fn carried_norms_match_the_direct_quadratic_form() {
         use super::{Unobserved, for_each_short_observed};
-        use crate::int::Int;
         use crate::named::{a_n, d_n};
 
         // The direct `O(n²)` evaluation through `Gram::norm_sq` is the oracle
@@ -705,7 +704,11 @@ mod tests {
             Gram::<i64>::from_rows(2, &[2, -1, -1, 2]).unwrap(),
         ] {
             let n = gram.dim();
-            let radius_sq = 3 * (0..n).map(|i| gram.entry(i, i).widen()).min().unwrap();
+            let radius_sq = 3
+                * (0..n)
+                    .map(|i| <i64 as crate::Int>::widen(gram.entry(i, i)))
+                    .min()
+                    .unwrap();
             let mut checked = 0u64;
             for_each_short_observed(
                 &gram,

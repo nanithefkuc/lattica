@@ -19,11 +19,11 @@ pub fn transform_batch_soa_avx2(
         for (row, input) in inputs.chunks_exact(vectors).enumerate() {
             let coefficient = _mm256_set1_pd(matrix[row * cols + column]);
             for (destination, values) in out[..vector_end]
-                .chunks_exact_mut(4)
-                .zip(input[..vector_end].chunks_exact(4))
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(input[..vector_end].as_chunks::<4>().0)
             {
-                let destination: &mut [f64; 4] = destination.try_into().unwrap();
-                let values: &[f64; 4] = values.try_into().unwrap();
                 let updated = _mm256_add_pd(
                     _mm256_loadu_pd(destination),
                     _mm256_mul_pd(coefficient, _mm256_loadu_pd(values)),
