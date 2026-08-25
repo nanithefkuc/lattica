@@ -102,6 +102,11 @@ macro_rules! fixed_24_kernel {
     };
 }
 
+// The dispatched kernel is block 12. Blocks 6 and 8 are the rejected
+// alternatives retained as benchmark evidence, reachable only through the
+// unstable internals surface.
+#[cfg(feature = "internals")]
 fixed_24_kernel!(transform_batch_soa_fixed_24_block6, 6);
+#[cfg(feature = "internals")]
 fixed_24_kernel!(transform_batch_soa_fixed_24_block8, 8);
 fixed_24_kernel!(transform_batch_soa_fixed_24_block12, 12);
