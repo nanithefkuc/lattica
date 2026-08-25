@@ -166,13 +166,22 @@ implementation. Integer SIMD is specifically incompatible with the existing
 per-operation overflow boundary.
 
 Repeated local-workload optimization also stopped at the evidence boundary.
-List and relevant-vector calls allocate output-proportionally, exact census
-allocates cold factorization state, and Construction-A membership currently
-allocates one residue buffer per call. No crate consumer repeats these setup or
+List and relevant-vector calls allocate output-proportionally and exact census
+allocates cold factorization state. No crate consumer repeats these setup or
 oracle operations in a hot path, so prepared public APIs and extra scratch
 types were not added speculatively. The selected scalar improvements are the
 measured reduction/enumeration changes, total unstable list ordering, shared
 exact algebra, and triangular Gram work above.
+
+Re-audited 2026-08-25 after the decoder split: the only consumers are
+`latticode` and `lattice-engine`, their repeated per-symbol integer work is
+inline checked arithmetic or already-prepared state (`Gso`, `Zq`, adjugate
+inverses built at construction), and no caller anywhere repeats Construction A
+membership (which moved to `lattice-engine`), SNF, `coset_representatives`,
+batch transforms, or determinant work over one immutable input. The repeated
+reductions that do exist — reporting accessors re-running LLL and census on a
+frozen Gram — are consumer-owned memoization of immutable results, not a case
+for new `lattica` types.
 
 Consumer build options were measured separately with the comparison harness.
 `-C target-cpu=native` produced LLL medians of `6.792/69.315/247.868 µs` and
