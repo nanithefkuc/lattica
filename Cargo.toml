@@ -1,6 +1,6 @@
 [package]
 name = "lattica"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.89"
 license = "MIT"
@@ -18,8 +18,8 @@ simd = ["dep:archmage", "dep:simdispatch"]
 internals = []
 
 [dependencies]
-archmage = { git = "https://github.com/nanithefkuc/archmage", rev = "de519319b5670d93f71dada4c49cdfd83c0fc0ec", optional = true }
-simdispatch = { git = "https://github.com/nanithefkuc/simdispatch", rev = "5940194107384953cd8cd9f45c8d902b26d5686e", optional = true }
+archmage = { version = "=0.9.29", optional = true }
+simdispatch = { version = "=0.1.0", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }

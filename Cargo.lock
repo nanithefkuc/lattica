@@ -34,8 +34,9 @@ checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
 name = "archmage"
-version = "0.9.28"
-source = "git+https://github.com/nanithefkuc/archmage?rev=de519319b5670d93f71dada4c49cdfd83c0fc0ec#de519319b5670d93f71dada4c49cdfd83c0fc0ec"
+version = "0.9.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e3a17fc8196cce2902db52de7a21d4407971d080c01a0256037fcd3fc6e536e"
 dependencies = [
  "archmage-macros",
  "safe_unaligned_simd",
@@ -44,12 +45,13 @@ dependencies = [
 
 [[package]]
 name = "archmage-macros"
-version = "0.9.28"
-source = "git+https://github.com/nanithefkuc/archmage?rev=de519319b5670d93f71dada4c49cdfd83c0fc0ec#de519319b5670d93f71dada4c49cdfd83c0fc0ec"
+version = "0.9.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d0c10fb756a60ff9418d3e5dcd2b665c5914e32391d2523995d2c2c09237ac6"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.5",
 ]
 
 [[package]]
@@ -211,7 +213,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "lattica"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "archmage",
  "criterion",
@@ -344,7 +346,7 @@ checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.5",
 ]
 
 [[package]]
@@ -368,8 +370,9 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "simdispatch"
-version = "0.0.0"
-source = "git+https://github.com/nanithefkuc/simdispatch?rev=5940194107384953cd8cd9f45c8d902b26d5686e#5940194107384953cd8cd9f45c8d902b26d5686e"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51597eac7e0605fec8b81324c97c325a7fb59ecdd9f6f452eaadd06f625c725f"
 dependencies = [
  "archmage",
 ]
@@ -387,9 +390,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "3.0.3"
+version = "3.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53e9bae58849f64dfa4f5d5ae372c8341f7305f82a3868709269343628b659a3"
+checksum = "12df2e0110f65b775f769bb17ef989067a1d931b2eb822bd4346631eeada89f9"
 dependencies = [
  "proc-macro2",
  "quote",

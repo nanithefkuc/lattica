@@ -83,6 +83,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   alone and a pipeline group adds it to the fastest candidates, showing an
   end-to-end AoS win of 2.2x to 2.5x including conversion cost.
 
+## [0.2.1] - 2026-09-09
+
+### Changed
+
+- The SIMD dependencies now use exact crates.io releases: `simdispatch`
+  `=0.1.0` and `archmage` `=0.9.29`, keeping backend policy and capability
+  tokens on one published source.
+
 ## [0.2.0]
 
 Decoding moves out: this crate is now the lattice-arithmetic object only, and
