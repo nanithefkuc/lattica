@@ -483,6 +483,20 @@ mod tests {
     }
 
     #[test]
+    fn overflowing_products_are_transactional() {
+        // The product `factor * s` overflows before any subtraction runs.
+        let mut m = IntMatrix::<i32>::from_rows(2, 2, &[1, 1, 2, 1]).unwrap();
+        let before = m.clone();
+        assert!(m.row_sub_mul(0, 1, i32::MAX).is_err());
+        assert_eq!(m, before);
+
+        let mut m = IntMatrix::<i32>::from_rows(2, 2, &[1, 2, 1, 1]).unwrap();
+        let before = m.clone();
+        assert!(m.col_sub_mul(0, 1, i32::MAX).is_err());
+        assert_eq!(m, before);
+    }
+
+    #[test]
     fn overflowing_column_updates_are_transactional() {
         let mut m = IntMatrix::<i32>::from_rows(2, 2, &[0, 1, i32::MAX, 1]).unwrap();
         let before = m.clone();

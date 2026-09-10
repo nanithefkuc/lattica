@@ -227,14 +227,22 @@ impl<T: Int> Nested<T> {
             width_bits: usize::BITS,
         };
         let mut all = Vec::new();
-        // Reserve fallibly: a codebook that cannot fit in memory is the
-        // documented range error, never an aborting allocation.
+        let mut buffer = Vec::new();
+        // Every allocation below is fallible and maps to the same range
+        // error: the outer reservation, the scratch buffer, and each
+        // representative row. A codebook that cannot fit in memory is the
+        // documented error, never an aborting allocation, and a reserved
+        // `Vec` never reallocates while it fills within its reservation.
         all.try_reserve(usize::try_from(count).map_err(|_| too_large())?)
             .map_err(|_| too_large())?;
-        let mut buffer = vec![T::ZERO; n];
+        buffer.try_reserve(n).map_err(|_| too_large())?;
+        buffer.resize(n, T::ZERO);
         for which in 0..count {
             self.coset_representative(which, &mut buffer)?;
-            all.push(buffer.clone());
+            let mut row = Vec::new();
+            row.try_reserve(n).map_err(|_| too_large())?;
+            row.extend_from_slice(&buffer);
+            all.push(row);
         }
         Ok(all)
     }
@@ -400,6 +408,17 @@ mod tests {
         assert_eq!(out, [1, 0]);
         pair.coset_representative(2, &mut out).unwrap();
         assert_eq!(out, [0, 1]);
+    }
+
+    #[test]
+    fn the_u64_index_boundary_decomposes_exactly() {
+        // index = 4 · 2^62 = 2^64: every `u64` index is in range, and the
+        // boundary value itself splits into full digits.
+        let transform = IntMatrix::<i128>::from_rows(2, 2, &[4, 0, 0, 1i128 << 62]).unwrap();
+        let pair = Nested::new(zn(2).unwrap(), transform).unwrap();
+        let mut out = [0i128; 2];
+        pair.coset_representative(u64::MAX, &mut out).unwrap();
+        assert_eq!(out, [3, (1i128 << 62) - 1]);
     }
 
     #[test]

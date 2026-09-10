@@ -87,7 +87,7 @@ jobs:
       # so a renamed or newly added crate cannot slip through a denylist.
       - name: assert direct dependency set
         run: |
-          deps=$(cargo tree --all-features --depth 1 --prefix none --no-dedupe \
+          deps=$(cargo tree --locked --all-features --target all --depth 1 --prefix none --no-dedupe \
                    | awk 'NF {print $1}' | grep -v '^lattica$' | sort -u)
           echo "direct dependencies: ${deps:-<none>}"
           unexpected=0

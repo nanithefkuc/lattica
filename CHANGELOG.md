@@ -51,6 +51,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `negate_col`) are transactional: an overflowing update restores every entry
   it had already written, matching the crate-wide rule that a rejected call
   leaves all state exactly as it was.
+- `Nested::coset_representatives` makes *every* allocation fallible — the
+  outer reservation, the scratch buffer, and each representative row — so an
+  exhausted allocator surfaces as the documented range error instead of an
+  abort. A dedicated regression test denies allocation outright and asserts
+  the typed error; cross-review by a second model caught the gap after the
+  outer reservation alone had been made fallible.
 
 ### Changed
 
