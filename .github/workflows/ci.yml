@@ -80,21 +80,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      # Charter I4: lattica is a leaf. It must never acquire `fff` (field
-      # arithmetic) or `sgraph` (layer 2) as a dependency. A convention that is
-      # only written down does not survive contact with a deadline.
-      - name: assert dependency set
+      # Ground rule: lattica is a leaf whose only allowed dependencies are
+      # simdispatch and archmage (runtime, both behind `simd`), plus criterion
+      # as the benchmark harness. The check is an allowlist over *direct*
+      # dependencies: anything outside the set fails, whatever it is called,
+      # so a renamed or newly added crate cannot slip through a denylist.
+      - name: assert direct dependency set
         run: |
-          tree=$(cargo tree --all-features --prefix none --no-dedupe \
-                   | awk 'NF {print $1}' | sort -u | grep -v '^lattica$' || true)
-          echo "dependencies: ${tree:-<none>}"
-          for forbidden in fff fgf sgraph cafft gfm; do
-            if echo "$tree" | grep -qx "$forbidden"; then
-              echo "::error::forbidden dependency: $forbidden"
-              exit 1
-            fi
+          deps=$(cargo tree --all-features --depth 1 --prefix none --no-dedupe \
+                   | awk 'NF {print $1}' | grep -v '^lattica$' | sort -u)
+          echo "direct dependencies: ${deps:-<none>}"
+          unexpected=0
+          for dep in $deps; do
+            case "$dep" in
+              archmage|simdispatch|criterion) ;;
+              *) echo "::error::dependency outside the allowed set: $dep"; unexpected=1 ;;
+            esac
           done
+          exit "$unexpected"
 
   cross-execute:
     name: cross-execute ${{ matrix.target }}

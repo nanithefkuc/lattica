@@ -13,7 +13,7 @@
 //! hardcoding them would make the acceptance tests circular.
 
 use super::basis::{Basis, Gram};
-use super::error::LatticeError;
+use super::error::{LatticeError, RangeError};
 use super::int::Int;
 
 /// The integer lattice `Z^n`.
@@ -28,6 +28,7 @@ pub fn zn<T: Int>(n: usize) -> Result<Gram<T>, LatticeError> {
     if n == 0 {
         return Err(LatticeError::Degenerate);
     }
+    check_rank(n)?;
     let mut data = vec![T::ZERO; n * n];
     for i in 0..n {
         data[i * n + i] = T::ONE;
@@ -44,6 +45,7 @@ pub fn zn_basis<T: Int>(n: usize) -> Result<Basis<T>, LatticeError> {
     if n == 0 {
         return Err(LatticeError::Degenerate);
     }
+    check_rank(n)?;
     let mut data = vec![T::ZERO; n * n];
     for i in 0..n {
         data[i * n + i] = T::ONE;
@@ -65,6 +67,7 @@ pub fn a_n<T: Int>(n: usize) -> Result<Gram<T>, LatticeError> {
     if n == 0 {
         return Err(LatticeError::Degenerate);
     }
+    check_rank(n)?;
     cartan(n, &path_edges(n))
 }
 
@@ -79,6 +82,7 @@ pub fn a_n_basis<T: Int>(n: usize) -> Result<Basis<T>, LatticeError> {
     if n == 0 {
         return Err(LatticeError::Degenerate);
     }
+    check_rank(n)?;
     let ambient = n + 1;
     let mut data = vec![T::ZERO; n * ambient];
     for i in 0..n {
@@ -106,6 +110,7 @@ pub fn d_n<T: Int>(n: usize) -> Result<Gram<T>, LatticeError> {
     if n < 3 {
         return Err(LatticeError::Degenerate);
     }
+    check_rank(n)?;
     let mut edges = path_edges(n - 1);
     // The fork: node n-1 attaches to node n-3, not to the end of the path.
     edges.push((n - 3, n - 1));
@@ -123,6 +128,7 @@ pub fn d_n_basis<T: Int>(n: usize) -> Result<Basis<T>, LatticeError> {
     if n < 3 {
         return Err(LatticeError::Degenerate);
     }
+    check_rank(n)?;
     let minus_one = T::ZERO.try_sub(T::ONE)?;
     let mut data = vec![T::ZERO; n * n];
     for i in 0..n - 1 {
@@ -310,6 +316,18 @@ fn cartan<T: Int>(n: usize, edges: &[(usize, usize)]) -> Result<Gram<T>, Lattice
     Gram::from_rows(n, &data)
 }
 
+/// Rejects a rank whose element counts would overflow before any allocation
+/// or edge arithmetic is attempted.
+fn check_rank(n: usize) -> Result<(), LatticeError> {
+    if n > super::int::MAX_DIM {
+        return Err(LatticeError::Range(RangeError::Dimension {
+            requested: n,
+            max: super::int::MAX_DIM,
+        }));
+    }
+    Ok(())
+}
+
 /// Edges of a path on `n` nodes: `0–1–2–…–(n-1)`.
 fn path_edges(n: usize) -> Vec<(usize, usize)> {
     (0..n.saturating_sub(1)).map(|i| (i, i + 1)).collect()
@@ -330,6 +348,32 @@ mod tests {
         assert_eq!(a_n::<i64>(0), Err(LatticeError::Degenerate));
         assert_eq!(d_n::<i64>(2), Err(LatticeError::Degenerate));
         assert_eq!(d_n_basis::<i64>(2), Err(LatticeError::Degenerate));
+    }
+
+    #[test]
+    fn an_oversized_dimension_is_rejected_without_allocating() {
+        // `(1 << (BITS - 1)) + 1` squared overflows `usize`: before the rank
+        // guard this panicked inside `vec![T::ZERO; n * n]` instead of
+        // returning the documented dimension error.
+        let huge = (1usize << (usize::BITS - 1)) + 1;
+        // The constructors return different success types, so each rejection
+        // is asserted on its own.
+        for rejected in [
+            zn::<i64>(huge).is_err(),
+            zn_basis::<i64>(huge).is_err(),
+            a_n::<i64>(huge).is_err(),
+            a_n_basis::<i64>(huge).is_err(),
+            d_n::<i64>(huge).is_err(),
+            d_n_basis::<i64>(huge).is_err(),
+        ] {
+            assert!(rejected);
+        }
+        match zn::<i64>(huge) {
+            Err(LatticeError::Range(crate::error::RangeError::Dimension { requested, .. })) => {
+                assert_eq!(requested, huge);
+            }
+            other => panic!("expected a dimension error, got {other:?}"),
+        }
     }
 
     #[test]

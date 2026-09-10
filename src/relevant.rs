@@ -6,7 +6,7 @@
 //! parity coset, then applies that characterization without floating point.
 
 use crate::basis::Gram;
-use crate::error::{DecodeError, RangeError};
+use crate::error::{EnumerationError, RangeError};
 use crate::int::Int;
 use crate::shortvec::for_each_short;
 #[cfg(feature = "internals")]
@@ -95,13 +95,13 @@ impl CosetMinima {
 /// # Errors
 ///
 /// - [`RangeError::Dimension`] above [`MAX_RELEVANT_DIM`];
-/// - [`DecodeError::NotInLattice`] if `gram` is not positive definite;
-/// - [`DecodeError::EnumerationBudget`] if `node_budget` is exhausted;
-/// - [`DecodeError::Range`] if an exact intermediate exceeds `i128`.
+/// - [`EnumerationError::NotALattice`] if `gram` is not positive definite;
+/// - [`EnumerationError::EnumerationBudget`] if `node_budget` is exhausted;
+/// - [`EnumerationError::Range`] if an exact intermediate exceeds `i128`.
 pub fn relevant_vectors<T: Int>(
     gram: &Gram<T>,
     node_budget: u64,
-) -> Result<Vec<Vec<i128>>, DecodeError> {
+) -> Result<Vec<Vec<i128>>, EnumerationError> {
     let (coset_count, radius_sq) = radius_for_parity_ball(gram)?;
     if coset_count == 0 {
         return Ok(Vec::new());
@@ -113,7 +113,7 @@ pub fn relevant_vectors<T: Int>(
 
 /// Computes the parity-coset count and the smallest radius whose ball holds a
 /// representative of every coset: the largest norm among the 0/1 vectors.
-fn radius_for_parity_ball<T: Int>(gram: &Gram<T>) -> Result<(usize, i128), DecodeError> {
+fn radius_for_parity_ball<T: Int>(gram: &Gram<T>) -> Result<(usize, i128), EnumerationError> {
     let n = gram.dim();
     if n > MAX_RELEVANT_DIM {
         return Err(RangeError::Dimension {
@@ -148,7 +148,7 @@ fn collect_coset_minima_with<T: Int, S: CosetSink>(
     node_budget: u64,
     minima: &mut CosetMinima,
     sink: &mut S,
-) -> Result<(), DecodeError> {
+) -> Result<(), EnumerationError> {
     for_each_short(gram, radius_sq, node_budget, |coordinates, norm_sq| {
         sink.emission();
         let mask = parity_mask(coordinates);
@@ -244,7 +244,7 @@ impl CosetSink for CountingSink {
 pub fn relevant_vectors_profiled<T: Int>(
     gram: &Gram<T>,
     node_budget: u64,
-) -> Result<(Vec<Vec<i128>>, RelevantStats), DecodeError> {
+) -> Result<(Vec<Vec<i128>>, RelevantStats), EnumerationError> {
     let mut stats = RelevantStats::default();
     let setup_start = Instant::now();
     let (coset_count, radius_sq) = radius_for_parity_ball(gram)?;
@@ -376,7 +376,7 @@ mod tests {
         let g = zn::<i64>(17).unwrap();
         assert!(matches!(
             relevant_vectors(&g, 1 << 20),
-            Err(crate::error::DecodeError::Range(
+            Err(crate::error::EnumerationError::Range(
                 crate::error::RangeError::Dimension {
                     requested: 17,
                     max: MAX_RELEVANT_DIM

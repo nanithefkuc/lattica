@@ -36,7 +36,7 @@
 //! oracle the other will be tested against.
 
 use crate::basis::Gram;
-use crate::error::{DecodeError, Op, RangeError};
+use crate::error::{EnumerationError, Op, RangeError};
 use crate::int::Int;
 
 /// Default ceiling on nodes visited by one enumeration.
@@ -70,11 +70,11 @@ pub struct Census<T: Int> {
 /// The enumeration is complete: no vector within the radius is skipped.
 ///
 /// # Errors
-///
-/// - [`DecodeError::NotInLattice`] if `G` is not positive definite, which means
-///   it does not describe a lattice.
-/// - [`DecodeError::EnumerationBudget`] if the node budget is exhausted.
-/// - [`DecodeError::Range`] if an intermediate exceeds `i128`.
+/// - [`EnumerationError::NotALattice`] if `G` is not positive definite, which
+///   means it does not describe a lattice.
+/// - [`EnumerationError::InvalidRadius`] if `radius_sq` is negative.
+/// - [`EnumerationError::EnumerationBudget`] if the node budget is exhausted.
+/// - [`EnumerationError::Range`] if an intermediate exceeds `i128`.
 ///
 /// # Examples
 ///
@@ -95,7 +95,7 @@ pub fn for_each_short<T, F>(
     radius_sq: i128,
     budget: u64,
     visit: F,
-) -> Result<u64, DecodeError>
+) -> Result<u64, EnumerationError>
 where
     T: Int,
     F: FnMut(&[i128], i128),
@@ -118,7 +118,7 @@ pub fn for_each_short_profiled<T, F>(
     radius_sq: i128,
     budget: u64,
     visit: F,
-) -> Result<(u64, EnumerationStats), DecodeError>
+) -> Result<(u64, EnumerationStats), EnumerationError>
 where
     T: Int,
     F: FnMut(&[i128], i128),
@@ -198,15 +198,20 @@ fn for_each_short_observed<T, F, O>(
     budget: u64,
     visit: F,
     observer: &mut O,
-) -> Result<u64, DecodeError>
+) -> Result<u64, EnumerationError>
 where
     T: Int,
     F: FnMut(&[i128], i128),
     O: EnumerationObserver,
 {
     let n = gram.dim();
-    if n == 0 || radius_sq < 0 {
+    if n == 0 {
         return Ok(0);
+    }
+    if radius_sq < 0 {
+        // A negative squared radius is caller error. Answering it with an
+        // empty enumeration would present nonsense as a proved fact.
+        return Err(EnumerationError::InvalidRadius { radius_sq });
     }
 
     let widened: Vec<i128> = (0..n)
@@ -246,7 +251,7 @@ where
 ///
 /// Never: the only `expect` is guarded by the zero-dimension early return
 /// immediately above it.
-pub fn census<T: Int>(gram: &Gram<T>, budget: u64) -> Result<Census<T>, DecodeError> {
+pub fn census<T: Int>(gram: &Gram<T>, budget: u64) -> Result<Census<T>, EnumerationError> {
     let n = gram.dim();
     if n == 0 {
         return Ok(Census {
@@ -261,6 +266,14 @@ pub fn census<T: Int>(gram: &Gram<T>, budget: u64) -> Result<Census<T>, DecodeEr
         .map(|i| gram.entry(i, i).widen())
         .min()
         .expect("dimension is nonzero");
+
+    // Each diagonal entry is the squared norm of a basis vector, so a
+    // positive-definite form has a strictly positive minimum. A nonpositive
+    // one proves the input is not a lattice before a walk could report a
+    // vacuous census for it.
+    if radius_sq <= 0 {
+        return Err(EnumerationError::NotALattice);
+    }
 
     let mut best = i128::MAX;
     let mut at_best = 0u64;
@@ -305,7 +318,7 @@ pub fn census<T: Int>(gram: &Gram<T>, budget: u64) -> Result<Census<T>, DecodeEr
 pub fn census_profiled<T: Int>(
     gram: &Gram<T>,
     budget: u64,
-) -> Result<(Census<T>, EnumerationStats), DecodeError> {
+) -> Result<(Census<T>, EnumerationStats), EnumerationError> {
     let n = gram.dim();
     if n == 0 {
         return Ok((
@@ -323,6 +336,12 @@ pub fn census_profiled<T: Int>(
         .map(|i| gram.entry(i, i).widen())
         .min()
         .expect("dimension is nonzero");
+
+    // As in `census`: a nonpositive minimum diagonal proves the form is not
+    // a lattice before any walk runs.
+    if radius_sq <= 0 {
+        return Err(EnumerationError::NotALattice);
+    }
 
     let mut best = i128::MAX;
     let mut at_best = 0u64;
@@ -371,7 +390,7 @@ struct Factorization {
 }
 
 impl Factorization {
-    fn new(gram: &[i128], n: usize) -> Result<Self, DecodeError> {
+    fn new(gram: &[i128], n: usize) -> Result<Self, EnumerationError> {
         let mut m = gram.to_vec();
         let mut prev = 1i128;
         for k in 0..n {
@@ -380,7 +399,7 @@ impl Factorization {
             // every leading principal minor is positive. Bareiss produces them
             // on the diagonal, so the check is free here.
             if pivot <= 0 {
-                return Err(DecodeError::NotInLattice);
+                return Err(EnumerationError::NotALattice);
             }
             for i in k + 1..n {
                 let leading = m[i * n + k];
@@ -437,11 +456,11 @@ impl<F: FnMut(&[i128], i128), O: EnumerationObserver> Walk<'_, F, O> {
     ///
     /// The caller forms that suffix sum once for the whole sibling group, so
     /// no node recomputes an dot product that its parent could amortize.
-    fn descend(&mut self, remaining: usize, acc: i128, tail: i128) -> Result<(), DecodeError> {
+    fn descend(&mut self, remaining: usize, acc: i128, tail: i128) -> Result<(), EnumerationError> {
         self.nodes += 1;
         self.observer.node();
         if self.nodes > self.budget {
-            return Err(DecodeError::EnumerationBudget { nodes: self.nodes });
+            return Err(EnumerationError::EnumerationBudget { nodes: self.nodes });
         }
 
         if remaining == 0 {
@@ -579,7 +598,7 @@ fn ceil_div(a: i128, b: i128) -> i128 {
 mod tests {
     use super::{DEFAULT_NODE_BUDGET, census, for_each_short};
     use crate::basis::Gram;
-    use crate::error::DecodeError;
+    use crate::error::EnumerationError;
 
     #[test]
     fn the_integer_lattice_has_two_minimal_vectors_per_axis() {
@@ -620,7 +639,32 @@ mod tests {
         let g = Gram::<i64>::from_rows(2, &[1, 2, 2, 1]).unwrap();
         assert_eq!(
             census(&g, DEFAULT_NODE_BUDGET),
-            Err(DecodeError::NotInLattice)
+            Err(EnumerationError::NotALattice)
+        );
+    }
+
+    #[test]
+    fn a_nonpositive_diagonal_is_not_a_vacuous_census() {
+        // Before the guard, the negative minimum diagonal flowed through as a
+        // negative radius and produced `Ok` with an empty census.
+        let negative = Gram::<i64>::from_rows(1, &[-1]).unwrap();
+        assert_eq!(
+            census(&negative, DEFAULT_NODE_BUDGET),
+            Err(EnumerationError::NotALattice)
+        );
+        let zero = Gram::<i64>::from_rows(2, &[0, 0, 0, 1]).unwrap();
+        assert_eq!(
+            census(&zero, DEFAULT_NODE_BUDGET),
+            Err(EnumerationError::NotALattice)
+        );
+    }
+
+    #[test]
+    fn a_negative_radius_is_an_error_not_an_empty_enumeration() {
+        let g = Gram::<i64>::from_rows(2, &[2, -1, -1, 2]).unwrap();
+        assert_eq!(
+            for_each_short(&g, -1, DEFAULT_NODE_BUDGET, |_, _| {}),
+            Err(EnumerationError::InvalidRadius { radius_sq: -1 })
         );
     }
 
@@ -628,7 +672,7 @@ mod tests {
     fn the_node_budget_is_enforced() {
         let g = Gram::<i64>::from_rows(2, &[2, -1, -1, 2]).unwrap();
         let r = for_each_short(&g, 10_000, 16, |_, _| {});
-        assert!(matches!(r, Err(DecodeError::EnumerationBudget { .. })));
+        assert!(matches!(r, Err(EnumerationError::EnumerationBudget { .. })));
     }
 
     #[test]

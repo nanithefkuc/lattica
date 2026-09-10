@@ -82,7 +82,7 @@ pub mod shortvec;
 pub mod zq;
 
 pub use basis::{Basis, Gram};
-pub use error::{DecodeError, LatticeError, Op, RangeError, ReduceError};
+pub use error::{EnumerationError, LatticeError, Op, RangeError, ReduceError};
 pub use int::Int;
 pub use nested::Nested;
 pub use reduce::{Delta, Reduced, lll};

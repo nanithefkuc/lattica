@@ -143,6 +143,12 @@ pub fn transform_batch_soa(
         });
     }
 
+    // An empty batch has nothing to transform. Returning here keeps every
+    // kernel path — dispatched or portable — from slicing zero-length chunks.
+    if vectors == 0 {
+        return Ok(());
+    }
+
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     if matches!(backend(), Backend::V3GfniCrypto | Backend::V3) {
         use archmage::SimdToken;
@@ -233,6 +239,10 @@ fn transform_batch_soa_scalar(
     inputs: &[f64],
     outputs: &mut [f64],
 ) {
+    if vectors == 0 {
+        // Every output plane is empty; zero-length chunking is undefined.
+        return;
+    }
     for column in 0..cols {
         let out = &mut outputs[column * vectors..(column + 1) * vectors];
         out.fill(0.0);
@@ -342,7 +352,7 @@ mod tests {
     fn dispatched_soa_batches_match_scalar_across_lane_boundaries() {
         for rows in 1..=9 {
             for cols in 1..=16 {
-                for vectors in (1..=17).chain([64, 65]) {
+                for vectors in (0..=17).chain([64, 65]) {
                     let matrix: Vec<f64> = (0..rows * cols)
                         .map(|i| (f64::from(i as u32) - 17.0) / 32.0)
                         .collect();
@@ -359,7 +369,7 @@ mod tests {
         }
         // The dispatched fixed geometry and its row-count fallbacks.
         for rows in [23usize, 24, 25] {
-            for vectors in (1..=17).chain([31, 63, 64, 65, 127, 128, 129, 257]) {
+            for vectors in (0..=17).chain([31, 63, 64, 65, 127, 128, 129, 257]) {
                 let matrix: Vec<f64> = (0..rows * 24)
                     .map(|i| (f64::from(i as u32) - 17.0) / 32.0)
                     .collect();
@@ -386,6 +396,19 @@ mod tests {
         let mut soa_out = [7.0; 6];
         assert!(transform_batch_soa(&[1.0; 6], 2, 3, 2, &[1.0; 3], &mut soa_out).is_err());
         assert_eq!(soa_out, [7.0; 6]);
+    }
+
+    #[test]
+    fn an_empty_soa_batch_is_accepted_on_every_geometry() {
+        // Zero vectors with valid matrix geometry used to panic in the
+        // portable reference's `chunks_exact(0)`.
+        for (rows, cols) in [(4usize, 4usize), (16, 16), (24, 24)] {
+            let matrix = vec![0.25; rows * cols];
+            assert_eq!(
+                transform_batch_soa(&matrix, rows, cols, 0, &[], &mut []),
+                Ok(())
+            );
+        }
     }
 
     #[cfg(all(feature = "simd", feature = "internals", target_arch = "x86_64"))]

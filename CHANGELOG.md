@@ -9,6 +9,52 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
+- **Breaking:** `DecodeError` is now `EnumerationError`, and the decode-only
+  variants (`BudgetExhausted` with a search radius, `InvalidRadius` and
+  `OutsideRadius` over `f64`, `LengthMismatch`, `NonFinite`) are gone.
+  Decoding vocabulary belongs to the layer that decides lattice points;
+  `lattica` keeps only the enumeration facts — `NotALattice` (formerly
+  `NotInLattice`), `EnumerationBudget`, `Range`, and a new integral
+  `InvalidRadius`. The enum is now `Eq`, having lost its float payload.
+- `for_each_short` rejects a negative squared radius with
+  `EnumerationError::InvalidRadius` instead of reporting a vacuous empty
+  enumeration, and `census`/`census_profiled` reject a non-positive-definite
+  Gram matrix with `NotALattice` before any walk runs.
+- The `Zq` composition laws (`add`, `sub`, `neg`, `mul`) moved behind the
+  unstable `internals` feature. No lattice path composes residues; the public
+  surface is the residue bridge — reduction, centered representatives, and
+  lift — that Construction A and shaping consume.
+- CI's dependency-boundary job is now an allowlist over direct dependencies
+  (`archmage`, `simdispatch`, `criterion`) rather than a denylist of renamed
+  crates.
+
+### Fixed
+
+- `Nested::from_bases` verifies that the solved transform reconstructs the
+  shaping basis exactly. Integral *projected* coordinates used to pass the
+  inclusion check even when a shaping vector had a component outside the
+  coding basis's span, silently describing a pair that is not nested.
+- `Nested::coset_representative` is transactional: a rejected index no longer
+  writes partial digits into the output buffer, and radices wider than `u64`
+  now resolve small indices instead of failing the radix conversion.
+- `Nested::coset_representatives` reserves fallibly, so a codebook that
+  cannot fit in memory returns the documented range error instead of
+  aborting on a capacity overflow.
+- The variable-dimension named constructors (`zn`, `zn_basis`, `a_n`,
+  `a_n_basis`, `d_n`, `d_n_basis`) validate the rank before allocating, so an
+  oversized dimension returns the documented `LatticeError::Range` instead of
+  panicking on an overflowing element count.
+- `transform_batch_soa` accepts an empty batch on every backend; the portable
+  reference used to panic on zero-length chunking for geometries without a
+  dispatched kernel.
+- The public `IntMatrix` mutators (`row_sub_mul`, `col_sub_mul`, `negate_row`,
+  `negate_col`) are transactional: an overflowing update restores every entry
+  it had already written, matching the crate-wide rule that a rejected call
+  leaves all state exactly as it was.
+
+### Changed
+
+
 - Ordinary exact LLL delays size-reduction quotients that cannot affect the
   next Lovász test until that test passes. The comparison corpus improves by
   14.1% to 16.9% at dimensions 8, 16, and 24 without changing its reduction

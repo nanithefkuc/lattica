@@ -10,8 +10,9 @@
 //! coordinates appear.
 //!
 //! [`Nested::from_bases`] exists for callers who have two ambient bases and
-//! want the inclusion *checked*: it solves `B_s = T · B_c` exactly and reports
-//! [`LatticeError::NotNested`] when the solution is not integral.
+//! want the inclusion *checked*: it solves `B_s = T · B_c` exactly, verifies
+//! that `T` reconstructs the shaping basis, and reports
+//! [`LatticeError::NotNested`] when it does not.
 //!
 //! # A note on determinants
 //!
@@ -84,8 +85,9 @@ impl<T: Int> Nested<T> {
     ///
     /// # Errors
     ///
-    /// [`LatticeError::NotNested`] if the solution is not integral, meaning
-    /// some generator of the second lattice is not in the first;
+    /// [`LatticeError::NotNested`] if the solution is not integral or does not
+    /// reconstruct the shaping basis, meaning some generator of the second
+    /// lattice is not in the first;
     /// [`LatticeError::Degenerate`] for a rank-deficient coding basis; and
     /// [`LatticeError::Range`] on a shape mismatch or an overflow.
     pub fn from_bases(coding: &Basis<T>, shaping: &Basis<T>) -> Result<Self, LatticeError> {
@@ -115,6 +117,13 @@ impl<T: Int> Nested<T> {
                     .map_err(|_| LatticeError::NotNested)?;
                 transform.set(i, j, value);
             }
+        }
+        // Integral projected coordinates do not prove inclusion: a shaping
+        // vector with a component outside the coding span still projects to
+        // integral coordinates. Reconstruct the shaping basis exactly and
+        // compare, so this type only ever describes a genuine sublattice.
+        if &transform.mul(coding.as_matrix())? != shaping.as_matrix() {
+            return Err(LatticeError::NotNested);
         }
         Self::new(gram, transform)
     }
@@ -176,14 +185,11 @@ impl<T: Int> Nested<T> {
             }
             .into());
         }
+        // First pass: prove the index is in range before anything is written,
+        // so a rejected call leaves `out` exactly as the caller left it.
         let mut remaining = which;
-        for (slot, &radix) in out.iter_mut().zip(&self.radices) {
-            let modulus = u64::try_from(radix.widen()).map_err(|_| RangeError::Overflow {
-                op: crate::error::Op::Div,
-                width_bits: 64,
-            })?;
-            *slot = T::narrow(i128::from(remaining % modulus))?;
-            remaining /= modulus;
+        for &radix in &self.radices {
+            remaining = mixed_radix_digit(radix, remaining)?.1;
         }
         if remaining != 0 {
             return Err(RangeError::Dimension {
@@ -191,6 +197,13 @@ impl<T: Int> Nested<T> {
                 max: usize::try_from(self.index.widen()).unwrap_or(usize::MAX),
             }
             .into());
+        }
+        // Second pass: write the digits.
+        let mut remaining = which;
+        for (slot, &radix) in out.iter_mut().zip(&self.radices) {
+            let (digit, next) = mixed_radix_digit(radix, remaining)?;
+            *slot = digit;
+            remaining = next;
         }
         Ok(())
     }
@@ -209,7 +222,15 @@ impl<T: Int> Nested<T> {
             width_bits: 64,
         })?;
         let n = self.radices.len();
-        let mut all = Vec::with_capacity(usize::try_from(count).unwrap_or(0));
+        let too_large = || RangeError::Overflow {
+            op: crate::error::Op::Mul,
+            width_bits: usize::BITS,
+        };
+        let mut all = Vec::new();
+        // Reserve fallibly: a codebook that cannot fit in memory is the
+        // documented range error, never an aborting allocation.
+        all.try_reserve(usize::try_from(count).map_err(|_| too_large())?)
+            .map_err(|_| too_large())?;
         let mut buffer = vec![T::ZERO; n];
         for which in 0..count {
             self.coset_representative(which, &mut buffer)?;
@@ -219,9 +240,24 @@ impl<T: Int> Nested<T> {
     }
 }
 
+/// One mixed-radix digit of an index: `(digit, remaining / radix)`.
+///
+/// A radix wider than `u64` can never be reached by a `u64` index — the digit
+/// is the whole remainder and nothing can follow it — so wide radices are
+/// handled directly rather than rejected. The digit is nonnegative and
+/// strictly below `radix`, so narrowing it into `T` cannot lose information.
+fn mixed_radix_digit<T: Int>(radix: T, remaining: u64) -> Result<(T, u64), RangeError> {
+    let Some(modulus) = u64::try_from(radix.widen()).ok() else {
+        return Ok((T::narrow(i128::from(remaining))?, 0));
+    };
+    let digit = T::narrow(i128::from(remaining % modulus))?;
+    Ok((digit, remaining / modulus))
+}
+
 #[cfg(test)]
 mod tests {
     use super::Nested;
+    use crate::basis::Basis;
     use crate::basis::Gram;
     use crate::error::LatticeError;
     use crate::int::IntMatrix;
@@ -329,5 +365,50 @@ mod tests {
         let shaping = pair.shaping_gram().unwrap();
         assert_eq!(Gram::from_rows(2, &[5, 10, 10, 25]).unwrap(), shaping);
         assert_eq!(shaping.det().unwrap(), 25);
+    }
+
+    #[test]
+    fn a_shaping_vector_outside_the_coding_span_is_rejected() {
+        // The coding basis spans only the first coordinate, while the shaping
+        // generator has a second component outside that span. Its projection
+        // is integral, so before the reconstruction check this pair was
+        // accepted with index 1.
+        let coding = Basis::<i64>::from_rows(1, 2, &[1, 0]).unwrap();
+        let shaping = Basis::<i64>::from_rows(1, 2, &[1, 1]).unwrap();
+        assert_eq!(
+            Nested::from_bases(&coding, &shaping),
+            Err(LatticeError::NotNested)
+        );
+    }
+
+    #[test]
+    fn a_rejected_coset_index_leaves_the_output_untouched() {
+        let pair = Nested::new(zn(2).unwrap(), scaled_transform(2, 2)).unwrap();
+        let mut out = [7i64; 2];
+        assert!(pair.coset_representative(4, &mut out).is_err());
+        assert_eq!(out, [7, 7]);
+    }
+
+    #[test]
+    fn wide_radices_reach_small_indices_exactly() {
+        // A radix wider than `u64` used to overflow the radix conversion even
+        // for indices that never touch it.
+        let transform = IntMatrix::<i128>::from_rows(2, 2, &[2, 0, 0, 1i128 << 65]).unwrap();
+        let pair = Nested::new(zn(2).unwrap(), transform).unwrap();
+        let mut out = [0i128; 2];
+        pair.coset_representative(1, &mut out).unwrap();
+        assert_eq!(out, [1, 0]);
+        pair.coset_representative(2, &mut out).unwrap();
+        assert_eq!(out, [0, 1]);
+    }
+
+    #[test]
+    fn an_unrepresentable_codebook_is_an_error_not_an_abort() {
+        let transform = IntMatrix::<i128>::from_rows(1, 1, &[1i128 << 63]).unwrap();
+        let pair = Nested::new(zn(1).unwrap(), transform).unwrap();
+        assert!(matches!(
+            pair.coset_representatives(),
+            Err(LatticeError::Range(_))
+        ));
     }
 }

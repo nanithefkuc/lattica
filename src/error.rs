@@ -95,89 +95,58 @@ impl fmt::Display for RangeError {
         }
     }
 }
-/// Failure while decoding to or enumerating lattice points.
+/// Failure while enumerating lattice vectors or proving a lattice fact.
 ///
-/// Not `Eq`: [`BudgetExhausted`](DecodeError::BudgetExhausted) carries the
-/// squared radius that was in effect, and a float has no total equality.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// This is the exact, integral side of the crate: complete enumeration over a
+/// coordinate ball and structural classification. The decode vocabulary —
+/// radius-shrinking search over a real basis, quantization, `mod Λ` — makes
+/// decisions about real targets and belongs to the layer above, so none of it
+/// appears here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum DecodeError {
-    /// An enumeration hit its budget before proving a nearest point.
+pub enum EnumerationError {
+    /// The supplied form is not the Gram matrix of a lattice.
     ///
-    /// The result is *unknown*, not approximate: a bounded decoder reports
-    /// exhaustion rather than returning a candidate as if it were the answer.
-    BudgetExhausted {
-        /// Nodes visited before the budget was reached.
-        nodes: u64,
-        /// The search radius in effect, squared.
-        radius_sq: f64,
-    },
-    /// The squared search radius was negative or non-finite.
-    InvalidRadius {
-        /// Rejected squared radius.
-        radius_sq: f64,
-    },
-    /// No lattice point lies inside the supplied search radius.
-    OutsideRadius {
-        /// Squared radius of the empty search ball.
-        radius_sq: f64,
-    },
-    /// A point required to lie in the lattice did not.
-    NotInLattice,
+    /// Enumeration needs a positive-definite form; anything else does not
+    /// describe a lattice, and answering a query about it would present
+    /// nonsense as a proved fact.
+    NotALattice,
     /// An exact enumeration exceeded its node budget.
     ///
-    /// Distinct from [`BudgetExhausted`](DecodeError::BudgetExhausted): that
-    /// one belongs to a radius-shrinking search over a real basis, this one to
-    /// a complete integral enumeration where there is no radius to report.
+    /// The walk is complete and integral: there is no radius to report, only
+    /// the node count at which the budget ran out.
     EnumerationBudget {
         /// Nodes visited before the budget was reached.
         nodes: u64,
     },
-    /// Input and output lengths disagreed with the lattice dimension.
-    LengthMismatch {
-        /// Length required by the lattice.
-        expected: usize,
-        /// Length supplied by the caller.
-        found: usize,
-    },
-    /// The input contained a NaN or an infinity.
-    NonFinite {
-        /// Index of the first offending coordinate.
-        index: usize,
+    /// The enumeration radius was negative.
+    ///
+    /// A squared radius is a squared length; a negative one is caller error,
+    /// not an empty ball.
+    InvalidRadius {
+        /// The rejected squared radius.
+        radius_sq: i128,
     },
     /// The integer path overflowed while forming the answer.
     Range(RangeError),
 }
 
-impl From<RangeError> for DecodeError {
+impl From<RangeError> for EnumerationError {
     fn from(e: RangeError) -> Self {
         Self::Range(e)
     }
 }
 
-impl fmt::Display for DecodeError {
+impl fmt::Display for EnumerationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::BudgetExhausted { nodes, radius_sq } => {
-                write!(
-                    f,
-                    "enumeration budget exhausted after {nodes} nodes at squared radius {radius_sq}"
-                )
-            }
-            Self::InvalidRadius { radius_sq } => {
-                write!(f, "invalid squared search radius {radius_sq}")
-            }
-            Self::OutsideRadius { radius_sq } => {
-                write!(f, "no lattice point within squared radius {radius_sq}")
-            }
+            Self::NotALattice => f.write_str("form is not positive definite"),
             Self::EnumerationBudget { nodes } => {
                 write!(f, "enumeration budget exhausted after {nodes} nodes")
             }
-            Self::NotInLattice => f.write_str("point is not in the lattice"),
-            Self::LengthMismatch { expected, found } => {
-                write!(f, "expected {expected} coordinates, found {found}")
+            Self::InvalidRadius { radius_sq } => {
+                write!(f, "invalid squared enumeration radius {radius_sq}")
             }
-            Self::NonFinite { index } => write!(f, "coordinate {index} is not finite"),
             Self::Range(e) => write!(f, "{e}"),
         }
     }
@@ -267,11 +236,11 @@ impl fmt::Display for LatticeError {
 }
 
 mod std_impls {
-    use super::{DecodeError, LatticeError, RangeError, ReduceError};
+    use super::{EnumerationError, LatticeError, RangeError, ReduceError};
 
     impl std::error::Error for RangeError {}
 
-    impl std::error::Error for DecodeError {
+    impl std::error::Error for EnumerationError {
         fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
             match self {
                 Self::Range(e) => Some(e),
@@ -301,7 +270,7 @@ mod std_impls {
 
 #[cfg(test)]
 mod tests {
-    use super::{DecodeError, LatticeError, Op, RangeError, ReduceError};
+    use super::{EnumerationError, LatticeError, Op, RangeError, ReduceError};
     use std::error::Error as _;
 
     fn overflow() -> RangeError {
@@ -351,48 +320,33 @@ mod tests {
     }
 
     #[test]
-    fn decode_displays_and_sources_preserve_details() {
+    fn enumeration_displays_and_sources_preserve_details() {
+        // The vocabulary carries no float payload, so it is totally ordered.
+        fn assert_total<E: Eq>() {}
+
         for (error, expected) in [
             (
-                DecodeError::BudgetExhausted {
-                    nodes: 12,
-                    radius_sq: 3.5,
-                },
-                "enumeration budget exhausted after 12 nodes at squared radius 3.5",
+                EnumerationError::NotALattice,
+                "form is not positive definite",
             ),
             (
-                DecodeError::InvalidRadius { radius_sq: -1.0 },
-                "invalid squared search radius -1",
-            ),
-            (
-                DecodeError::OutsideRadius { radius_sq: 2.0 },
-                "no lattice point within squared radius 2",
-            ),
-            (DecodeError::NotInLattice, "point is not in the lattice"),
-            (
-                DecodeError::EnumerationBudget { nodes: 9 },
+                EnumerationError::EnumerationBudget { nodes: 9 },
                 "enumeration budget exhausted after 9 nodes",
             ),
             (
-                DecodeError::LengthMismatch {
-                    expected: 4,
-                    found: 3,
-                },
-                "expected 4 coordinates, found 3",
+                EnumerationError::InvalidRadius { radius_sq: -3 },
+                "invalid squared enumeration radius -3",
             ),
             (
-                DecodeError::NonFinite { index: 2 },
-                "coordinate 2 is not finite",
-            ),
-            (
-                DecodeError::from(overflow()),
+                EnumerationError::from(overflow()),
                 "multiplication overflowed 64-bit integer",
             ),
         ] {
             assert_eq!(error.to_string(), expected);
         }
-        assert!(DecodeError::from(overflow()).source().is_some());
-        assert!(DecodeError::NotInLattice.source().is_none());
+        assert!(EnumerationError::from(overflow()).source().is_some());
+        assert!(EnumerationError::NotALattice.source().is_none());
+        assert_total::<EnumerationError>();
     }
 
     #[test]

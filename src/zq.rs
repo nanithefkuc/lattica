@@ -6,6 +6,12 @@
 //! out the power-of-two moduli that shaping actually uses. Multiplicative field
 //! structure belongs in `fff`, on the consumer's side of the boundary.
 //!
+//! Only the lattice path is public: reducing integers into residues and
+//! lifting them out. The composition laws — `add`, `sub`, `neg`, `mul` —
+//! exist for the unstable `internals` surface; no operation in this crate or
+//! its consumers composes residues, and general modular arithmetic is a
+//! different mathematical object from a lattice.
+//!
 //! # The two representatives
 //!
 //! A residue class has a canonical representative in `[0, q)` and a *centered*
@@ -136,8 +142,12 @@ impl Zq {
     }
 
     /// Modular addition of two reduced residues.
+    ///
+    /// Unstable: no lattice path composes residues, so this exists only behind
+    /// the `internals` feature.
     // Cast: the sum of two values below `q` is below `2q`, and one conditional
     // subtraction brings it below `q`.
+    #[cfg(feature = "internals")]
     #[allow(clippy::cast_possible_truncation)]
     #[must_use]
     pub const fn add(&self, a: u32, b: u32) -> u32 {
@@ -151,6 +161,9 @@ impl Zq {
     }
 
     /// Modular subtraction of two reduced residues.
+    ///
+    /// Unstable: as [`add`](Self::add).
+    #[cfg(feature = "internals")]
     #[must_use]
     pub const fn sub(&self, a: u32, b: u32) -> u32 {
         debug_assert!(a < self.q && b < self.q, "operand is not reduced");
@@ -158,6 +171,9 @@ impl Zq {
     }
 
     /// Modular negation of a reduced residue.
+    ///
+    /// Unstable: as [`add`](Self::add).
+    #[cfg(feature = "internals")]
     #[must_use]
     pub const fn neg(&self, a: u32) -> u32 {
         debug_assert!(a < self.q, "operand is not reduced");
@@ -165,6 +181,9 @@ impl Zq {
     }
 
     /// Modular multiplication of two reduced residues.
+    ///
+    /// Unstable: as [`add`](Self::add).
+    #[cfg(feature = "internals")]
     #[must_use]
     pub const fn mul(&self, a: u32, b: u32) -> u32 {
         debug_assert!(a < self.q && b < self.q, "operand is not reduced");
@@ -285,6 +304,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "internals")]
     #[test]
     fn ring_operations_agree_with_integer_arithmetic() {
         for q in 2..=32u32 {

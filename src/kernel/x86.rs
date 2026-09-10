@@ -12,6 +12,12 @@ pub fn transform_batch_soa_avx2(
     inputs: &[f64],
     outputs: &mut [f64],
 ) {
+    // Zero-length chunking is undefined; an empty batch is a no-op. The
+    // public gate never routes an empty batch here, but the internals surface
+    // can call this kernel directly.
+    if vectors == 0 {
+        return;
+    }
     let vector_end = vectors / 4 * 4;
     for column in 0..cols {
         let out = &mut outputs[column * vectors..(column + 1) * vectors];

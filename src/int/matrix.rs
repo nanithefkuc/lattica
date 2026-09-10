@@ -199,9 +199,9 @@ impl<T: Int> IntMatrix<T> {
     ///
     /// # Errors
     ///
-    /// [`RangeError::Overflow`] if any entry overflows. The matrix is then left
-    /// partially updated; callers that need atomicity work on a clone, which is
-    /// what the reduction routines in this module do.
+    /// [`RangeError::Overflow`] if any entry overflows. The update is
+    /// transactional: a rejected call restores every entry it had already
+    /// written, so the matrix is exactly as it was before the call.
     ///
     /// # Panics
     ///
@@ -219,22 +219,64 @@ impl<T: Int> IntMatrix<T> {
         if factor.is_zero() || target == source {
             return Ok(());
         }
-        for j in 0..self.cols {
-            let s = self.data[source * self.cols + j];
+        for column in 0..self.cols {
+            let s = self.data[source * self.cols + column];
             if s.is_zero() {
                 continue;
             }
-            let t = self.data[target * self.cols + j];
-            self.data[target * self.cols + j] = t.try_sub(factor.try_mul(s)?)?;
+            let product = match factor.try_mul(s) {
+                Ok(product) => product,
+                Err(error) => {
+                    self.undo_row_sub_mul(target, source, factor, column)?;
+                    return Err(error);
+                }
+            };
+            let t = self.data[target * self.cols + column];
+            match t.try_sub(product) {
+                Ok(updated) => self.data[target * self.cols + column] = updated,
+                Err(error) => {
+                    self.undo_row_sub_mul(target, source, factor, column)?;
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Restores `row[target] += factor * row[source]` over the columns before
+    /// `exclusive_end` after a failed update.
+    ///
+    /// The inverse cannot overflow: every restored entry was representable
+    /// before the update, the source row is unchanged, and checked integer
+    /// arithmetic is an exact bijection on the values involved.
+    fn undo_row_sub_mul(
+        &mut self,
+        target: usize,
+        source: usize,
+        factor: T,
+        exclusive_end: usize,
+    ) -> Result<(), RangeError> {
+        for column in 0..exclusive_end {
+            let s = self.data[source * self.cols + column];
+            if s.is_zero() {
+                continue;
+            }
+            let updated = self.data[target * self.cols + column];
+            self.data[target * self.cols + column] = updated.try_add(factor.try_mul(s)?)?;
         }
         Ok(())
     }
 
     /// `col[target] -= factor * col[source]`.
     ///
+    /// Leaves the matrix untouched when `factor` is zero or the columns
+    /// coincide.
+    ///
     /// # Errors
     ///
-    /// [`RangeError::Overflow`] if any entry overflows.
+    /// [`RangeError::Overflow`] if any entry overflows. The update is
+    /// transactional: a rejected call restores every entry it had already
+    /// written, so the matrix is exactly as it was before the call.
     ///
     /// # Panics
     ///
@@ -252,13 +294,47 @@ impl<T: Int> IntMatrix<T> {
         if factor.is_zero() || target == source {
             return Ok(());
         }
-        for i in 0..self.rows {
-            let s = self.data[i * self.cols + source];
+        for row in 0..self.rows {
+            let s = self.data[row * self.cols + source];
             if s.is_zero() {
                 continue;
             }
-            let t = self.data[i * self.cols + target];
-            self.data[i * self.cols + target] = t.try_sub(factor.try_mul(s)?)?;
+            let product = match factor.try_mul(s) {
+                Ok(product) => product,
+                Err(error) => {
+                    self.undo_col_sub_mul(target, source, factor, row)?;
+                    return Err(error);
+                }
+            };
+            let t = self.data[row * self.cols + target];
+            match t.try_sub(product) {
+                Ok(updated) => self.data[row * self.cols + target] = updated,
+                Err(error) => {
+                    self.undo_col_sub_mul(target, source, factor, row)?;
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Restores `col[target] += factor * col[source]` over the rows before
+    /// `exclusive_end` after a failed update; see [`Self::undo_row_sub_mul`]
+    /// for why the inverse cannot overflow.
+    fn undo_col_sub_mul(
+        &mut self,
+        target: usize,
+        source: usize,
+        factor: T,
+        exclusive_end: usize,
+    ) -> Result<(), RangeError> {
+        for row in 0..exclusive_end {
+            let s = self.data[row * self.cols + source];
+            if s.is_zero() {
+                continue;
+            }
+            let updated = self.data[row * self.cols + target];
+            self.data[row * self.cols + target] = updated.try_add(factor.try_mul(s)?)?;
         }
         Ok(())
     }
@@ -267,16 +343,32 @@ impl<T: Int> IntMatrix<T> {
     ///
     /// # Errors
     ///
-    /// [`RangeError::Overflow`] if an entry is the type minimum.
+    /// [`RangeError::Overflow`] if an entry is the type minimum. The update is
+    /// transactional: a rejected call restores every entry it had already
+    /// negated.
     ///
     /// # Panics
     ///
     /// If `row` is out of bounds.
     pub fn negate_row(&mut self, row: usize) -> Result<(), RangeError> {
         assert!(row < self.rows, "row index out of bounds");
-        for j in 0..self.cols {
-            let v = self.data[row * self.cols + j];
-            self.data[row * self.cols + j] = v.try_neg()?;
+        for column in 0..self.cols {
+            match self.data[row * self.cols + column].try_neg() {
+                Ok(negated) => self.data[row * self.cols + column] = negated,
+                Err(error) => {
+                    self.undo_negate_row(row, column)?;
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Restores the negated prefix before `exclusive_end`. The inverse of a
+    /// succeeded negation is always representable.
+    fn undo_negate_row(&mut self, row: usize, exclusive_end: usize) -> Result<(), RangeError> {
+        for column in 0..exclusive_end {
+            self.data[row * self.cols + column] = self.data[row * self.cols + column].try_neg()?;
         }
         Ok(())
     }
@@ -285,16 +377,32 @@ impl<T: Int> IntMatrix<T> {
     ///
     /// # Errors
     ///
-    /// [`RangeError::Overflow`] if an entry is the type minimum.
+    /// [`RangeError::Overflow`] if an entry is the type minimum. The update is
+    /// transactional: a rejected call restores every entry it had already
+    /// negated.
     ///
     /// # Panics
     ///
     /// If `col` is out of bounds.
     pub fn negate_col(&mut self, col: usize) -> Result<(), RangeError> {
         assert!(col < self.cols, "column index out of bounds");
-        for i in 0..self.rows {
-            let v = self.data[i * self.cols + col];
-            self.data[i * self.cols + col] = v.try_neg()?;
+        for row in 0..self.rows {
+            match self.data[row * self.cols + col].try_neg() {
+                Ok(negated) => self.data[row * self.cols + col] = negated,
+                Err(error) => {
+                    self.undo_negate_col(col, row)?;
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Restores the negated prefix before `exclusive_end`; see
+    /// [`Self::undo_negate_row`] for why the inverse always succeeds.
+    fn undo_negate_col(&mut self, col: usize, exclusive_end: usize) -> Result<(), RangeError> {
+        for row in 0..exclusive_end {
+            self.data[row * self.cols + col] = self.data[row * self.cols + col].try_neg()?;
         }
         Ok(())
     }
@@ -358,5 +466,56 @@ impl<T: Int> IntMatrix<T> {
     /// [`RangeError::Overflow`] if an intermediate exceeds the element width.
     pub fn det(&self) -> Result<T, RangeError> {
         super::det(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IntMatrix;
+
+    #[test]
+    fn overflowing_row_updates_are_transactional() {
+        // Column 0 succeeds (0 - (-1) = 1); column 1 overflows (MAX + 1).
+        let mut m = IntMatrix::<i32>::from_rows(2, 2, &[0, i32::MAX, 1, 1]).unwrap();
+        let before = m.clone();
+        assert!(m.row_sub_mul(0, 1, -1).is_err());
+        assert_eq!(m, before);
+    }
+
+    #[test]
+    fn overflowing_column_updates_are_transactional() {
+        let mut m = IntMatrix::<i32>::from_rows(2, 2, &[0, 1, i32::MAX, 1]).unwrap();
+        let before = m.clone();
+        assert!(m.col_sub_mul(0, 1, -1).is_err());
+        assert_eq!(m, before);
+    }
+
+    #[test]
+    fn overflowing_row_negations_are_transactional() {
+        let mut m = IntMatrix::<i32>::from_rows(1, 2, &[-1, i32::MIN]).unwrap();
+        let before = m.clone();
+        assert!(m.negate_row(0).is_err());
+        assert_eq!(m, before);
+    }
+
+    #[test]
+    fn overflowing_column_negations_are_transactional() {
+        let mut m = IntMatrix::<i32>::from_rows(2, 2, &[-1, 0, i32::MIN, 0]).unwrap();
+        let before = m.clone();
+        assert!(m.negate_col(0).is_err());
+        assert_eq!(m, before);
+    }
+
+    #[test]
+    fn successful_updates_are_unchanged_by_the_transactional_path() {
+        let mut m = IntMatrix::<i64>::from_rows(2, 2, &[10, 4, 3, 2]).unwrap();
+        m.row_sub_mul(0, 1, 2).unwrap();
+        assert_eq!(m.row(0), &[4, 0]);
+        m.col_sub_mul(1, 0, -1).unwrap();
+        assert_eq!(m.row(0), &[4, 4]);
+        m.negate_row(1).unwrap();
+        assert_eq!(m.row(1), &[-3, -5]);
+        m.negate_col(0).unwrap();
+        assert_eq!(m.row(0), &[-4, 4]);
     }
 }
