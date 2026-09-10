@@ -799,6 +799,106 @@ the parity-representative loop it would accelerate is bounded at 3% of any
 cell, below this host's run-to-run dispersion, so no stable broad win was
 available.
 
+## Certificate-free construction reduction
+
+Command:
+
+```sh
+taskset -c 2 cargo bench --bench optimization --features internals
+```
+
+Measured 2026-09-10 on the same host and toolchain. A follow-up audit of the
+crate identified three measured optimization avenues; this section and the two
+below record the wave. `hnf_form` shares `hnf`'s elimination sequence but
+never allocates or updates the `rows`-by-`rows` unimodular transform, and the
+callers that discarded the certificate moved to it: both generator
+constructions, `Basis::rank`, and `Nested::new` — which now derives the index
+from the Hermite diagonal product instead of a separate Bareiss determinant,
+collapsing two eliminations into one. A new `construction_ns` corpus times
+these public paths over Construction D stacks (`k = n/2` generator rows per
+level, one and four levels) and `Nested::new` over sheared transforms;
+fingerprints (`|det B|`, the index) are identical before and after in every
+cell, and out-of-domain fingerprints report the same `overflow` marker as the
+factorization corpus.
+
+Two interleaved rounds, each side the median of eleven in-process samples
+(`src/` stashed for the before side so both sides ran the same corpus):
+
+| Cell | Dimension 8 | Dimension 16 | Dimension 24 | Dimension 48 |
+| :--- | ---: | ---: | ---: | ---: |
+| 1-level stack | 1.36x | 1.58x | 1.67x | 1.56x |
+| 4-level stack | 1.36x | 1.85x | 1.85x | 1.79x |
+| rank only | 1.36-1.48x | 1.17-1.20x | 1.17-1.23x | 1.21-1.23x |
+| `Nested::new` | 2.61x | 4.29x | 4.96x | 6.05x |
+
+The public certificate API is unchanged; a caller that needs `U` still gets
+the identical elimination. The accepted-domain note: dropping the unused
+transform arithmetic removes transform-only overflow failures, so a geometry
+that previously overflowed inside `U`'s updates can now succeed — the form
+and rank it returns were always well-defined.
+
+## Relevant-vector decomposition
+
+Command:
+
+```sh
+taskset -c 2 cargo bench --bench optimization --features internals
+```
+
+Measured 2026-09-10 against the same corpus. `relevant_vectors` now detects
+the connected components of the Gram matrix's off-diagonal support — the
+maximal orthogonal direct-sum decomposition — and enumerates each component's
+Voronoi-relevant vectors separately, embedding them into the full
+coordinates. A product of Voronoi cells has exactly the factors' facets, so a
+vector with nonzero components in two summands is never relevant: its
+sign-flipped sibling has the same norm in the same coset. Every component's
+walk is charged against the one aggregate node budget, and the dimension cap
+is checked before decomposition (a seventeen-dimensional diagonal Gram is
+over the cap however it splits).
+
+| Geometry | Before | After | Ratio |
+| :--- | ---: | ---: | ---: |
+| `Z^8` | 874 us | 2.6 us | 336x |
+| `Z^10` | 13.5 ms | 3.5 us | 3,862x |
+| `Z^12` | 213 ms | 4.4 us | 48,626x |
+| `A_8`/`D_8`/`E_8` | — | — | parity (0.99-1.00x) |
+| `A_12`/`D_12` | — | — | parity (0.99x) |
+
+The connected cells (every root lattice in the corpus) run the original
+single-walk path behind an `O(n^2)` component scan; their deltas sit inside
+this host's dispersion. Facet counts, opposite pairing, and lexicographic
+order are pinned by the existing oracles plus new fixtures for `Z^6` (the
+cube's `±e_i`), an `A_2 ⊕ A_2` pair on interleaved coordinates, and
+aggregate-budget exhaustion.
+
+## Dispatched array-of-structures batches at the fixed geometry
+
+Command:
+
+```sh
+taskset -c 2 cargo bench --bench kernel --features internals -- --save-baseline before
+taskset -c 2 cargo bench --bench kernel --features internals -- --baseline before
+```
+
+Measured deltas against the saved baseline (criterion means; all changes
+significant at p < 0.05):
+
+| Vectors | Before | After | Change |
+| ---: | ---: | ---: | ---: |
+| 1 | 87.1 ns | 88.4 ns | +1.2% (portable path, by design) |
+| 4 | 336.3 ns | 296.1 ns | -13.4% |
+| 8 | 673.9 ns | 430.3 ns | -36.2% |
+| 64 | 5.29 us | 2.22 us | -58.1% |
+| 257 | 25.83 us | 9.10 us | -64.9% |
+
+Below four vectors the portable path stays: the dispatched round trip costs
+more than the transform it replaces there, and the one-vector cell measures
+the retained decision. Output is pinned bit-identical by the new differential
+fixture across lane boundaries and ragged tails (four to seventeen,
+thirty-one, sixty-three to sixty-five, one hundred twenty-seven to one
+hundred twenty-nine, and two hundred fifty-seven vectors) alongside the
+backend overrides.
+
 ## Comparison target selection
 
 fplll remains the useful general-CVP target: its in-process public API exposes

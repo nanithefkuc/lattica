@@ -15,7 +15,7 @@
 
 use crate::basis::Basis;
 use crate::error::LatticeError;
-use crate::int::{Int, IntMatrix, hnf};
+use crate::int::{Int, IntMatrix, hnf_form};
 
 /// The generator matrix of the Construction A lattice `q·Z^n + lift(C)`.
 ///
@@ -46,14 +46,14 @@ pub fn construction_a_basis<T: Int>(
     for i in 0..n {
         stacked.set(k + i, i, q);
     }
-    let reduced = hnf(&stacked)?;
-    if reduced.rank != n {
+    let (form, rank) = hnf_form(&stacked)?;
+    if rank != n {
         return Err(LatticeError::Degenerate);
     }
     let mut rows = IntMatrix::<T>::zeros(n, n)?;
     for i in 0..n {
         for j in 0..n {
-            rows.set(i, j, reduced.h.get(i, j));
+            rows.set(i, j, form.get(i, j));
         }
     }
     Ok(Basis::from_rows(n, n, rows.as_slice())?)
@@ -107,14 +107,14 @@ pub fn construction_d_basis<T: Int>(
         stacked.set(row + i, i, weight);
     }
 
-    let reduced = hnf(&stacked)?;
-    if reduced.rank != n {
+    let (form, rank) = hnf_form(&stacked)?;
+    if rank != n {
         return Err(LatticeError::Degenerate);
     }
     let mut rows = IntMatrix::<T>::zeros(n, n)?;
     for i in 0..n {
         for j in 0..n {
-            rows.set(i, j, reduced.h.get(i, j));
+            rows.set(i, j, form.get(i, j));
         }
     }
     Ok(Basis::from_rows(n, n, rows.as_slice())?)

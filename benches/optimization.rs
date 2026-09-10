@@ -650,6 +650,80 @@ fn benchmark_relevant() {
     run_relevant_cell(&e8::<i64>().unwrap(), 240, "e8");
 }
 
+/// One Construction D level over `Z_2`: `k` generator rows with an identity
+/// prefix over the first `k` columns and deterministic sparse bits over the
+/// rest. Rows are unscaled — the construction itself applies the `2^level`
+/// weighting — so the Hermite intermediates match the exact-algebra corpus
+/// and stay inside `i128` at every corpus size.
+fn construction_level(n: usize, k: usize, level: usize) -> IntMatrix<i128> {
+    let mut m = IntMatrix::<i128>::zeros(k, n).unwrap();
+    for i in 0..k {
+        m.set(i, i, 1);
+        for j in k..n {
+            let bit = (i * 31 + j * 17 + i * j * 13 + level * 7) % 7 < 3;
+            m.set(i, j, i128::from(u8::from(bit)));
+        }
+    }
+    m
+}
+/// Construction-time reduction work: the generator constructions whose
+/// Hermite stacks grow tall with the number of levels, the rank-only query,
+/// and `Nested` construction. Fingerprints pin the lattice identity across
+/// any change to these paths.
+fn benchmark_construction() {
+    for n in [8usize, 16, 24, 48] {
+        let k = n / 2;
+        for levels in [1usize, 4] {
+            let mats: Vec<IntMatrix<i128>> = (0..levels)
+                .map(|level| construction_level(n, k, level))
+                .collect();
+            let basis = lattica::construct::construction_d_basis(2, &mats).unwrap();
+            // `|det B|` (the covolume) is the cheaper fingerprint, and beyond
+            // a width's accepted domain the cell reports the same `overflow`
+            // marker the factorization corpus uses.
+            let fingerprint = match basis.as_matrix().det() {
+                Ok(value) => value.to_string(),
+                Err(_) => "overflow".to_string(),
+            };
+            assert_eq!(basis.rank().unwrap(), n);
+
+            let d_ns = measured(|| {
+                black_box(
+                    lattica::construct::construction_d_basis(black_box(2), black_box(&mats))
+                        .unwrap(),
+                )
+            });
+            let rank_ns = measured(|| black_box(black_box(&basis).rank().unwrap()));
+            println!(
+                "construction_ns,{n},{levels}levels_hnf,{:.2},{fingerprint}",
+                d_ns.as_secs_f64() * 1e9
+            );
+            println!(
+                "construction_ns,{n},{levels}levels_rank,{:.2},{fingerprint}",
+                rank_ns.as_secs_f64() * 1e9
+            );
+        }
+        let coding = zn::<i128>(n).unwrap();
+        let transform = IntMatrix::from_rows(n, n, &skew_basis(n, 0, 4)).unwrap();
+        let pair = lattica::Nested::new(coding.clone(), transform.clone()).unwrap();
+        let index = pair.index();
+        // `Nested::new` consumes its inputs, and cloning inside the timed
+        // region would time the clone, so each sample draws a pre-made pair
+        // from a pool.
+        let mut pool: Vec<(Gram<i128>, IntMatrix<i128>)> = (0..=SAMPLES)
+            .map(|_| (coding.clone(), transform.clone()))
+            .collect();
+        let nested_ns = measured(|| {
+            let (gram, matrix) = pool.pop().unwrap();
+            black_box(lattica::Nested::new(black_box(gram), black_box(matrix)).unwrap())
+        });
+        println!(
+            "construction_ns,{n},nested_new,{:.2},{index}",
+            nested_ns.as_secs_f64() * 1e9
+        );
+    }
+}
+
 fn main() {
     benchmark_lll();
     benchmark_deep_lll();
@@ -657,4 +731,5 @@ fn main() {
     benchmark_factorization();
     benchmark_enumeration();
     benchmark_relevant();
+    benchmark_construction();
 }

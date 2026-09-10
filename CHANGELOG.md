@@ -7,7 +7,29 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- `int::hnf_form`: the row Hermite form and rank without the unimodular
+  transform, sharing `hnf`'s exact elimination sequence. The construction
+  paths, `Basis::rank`, and `Nested::new` moved to it — `Nested::new` now
+  derives the index from the Hermite diagonal product instead of a separate
+  Bareiss determinant — improving the generator constructions by 1.36x to
+  1.85x, `Basis::rank` by 1.17x to 1.48x, and `Nested::new` by 2.6x to 6.1x
+  across dimensions 8 to 48. A construction corpus (`construction_ns`) with
+  deterministic fingerprints now covers these paths.
+
 ### Changed
+
+- `relevant_vectors` decomposes orthogonal direct sums: connected components
+  of the Gram matrix's off-diagonal support are enumerated separately and
+  embedded, charged against the one aggregate node budget, with the dimension
+  cap enforced before decomposition. Fully decomposable inputs improve by
+  orders of magnitude (`Z^12`: 213 ms to 4.4 us); connected inputs keep the
+  original single-walk path at measured parity.
+- `transform_batch` dispatches the exact twenty-four-by-twenty-four geometry
+  through the fixed kernel from four vectors upward, packing bounded runs
+  through stack scratch so the batch stays allocation-free and bit-identical
+  to the portable path.
 
 - **Breaking:** `DecodeError` is now `EnumerationError`, and the decode-only
   variants (`BudgetExhausted` with a search radius, `InvalidRadius` and

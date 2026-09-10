@@ -19,7 +19,7 @@
 
 use super::error::{LatticeError, RangeError, ReduceError};
 use super::gso::Gso;
-use super::int::{Int, IntMatrix, det, hnf};
+use super::int::{Int, IntMatrix, det, hnf_form};
 
 /// An integral generator matrix: one lattice basis vector per row, in ambient
 /// `Z^m` coordinates.
@@ -70,7 +70,7 @@ impl<T: Int> Basis<T> {
     ///
     /// [`RangeError`] if Hermite reduction exceeds the element width.
     pub fn rank(&self) -> Result<usize, RangeError> {
-        Ok(hnf(&self.rows)?.rank)
+        Ok(hnf_form(&self.rows)?.1)
     }
 
     /// The Gram matrix `B Bᵀ`.

@@ -23,7 +23,7 @@
 
 use crate::basis::{Basis, Gram};
 use crate::error::{LatticeError, RangeError};
-use crate::int::{Int, IntMatrix, adjugate, det, hnf};
+use crate::int::{Int, IntMatrix, adjugate, hnf_form};
 
 /// A pair `Λ_s ⊆ Λ_c` of a lattice and a finite-index sublattice.
 ///
@@ -57,17 +57,24 @@ impl<T: Int> Nested<T> {
             }
             .into());
         }
-        let index = det(&transform)?.try_abs()?;
-        if index.is_zero() {
-            return Err(LatticeError::Degenerate);
-        }
-
         // The Hermite form of `T` is upper triangular with positive diagonal,
         // and the box `0 <= a_i < H_ii` is a complete set of coset
         // representatives for `Z^n / rowspan(H)`. Those diagonal entries are
-        // the mixed radices an encoder counts in.
-        let reduced = hnf(&transform)?;
-        let radices: Vec<T> = (0..n).map(|i| reduced.h.get(i, i)).collect();
+        // the mixed radices an encoder counts in — and, for a square
+        // full-rank form, their product is `|det T|`, the index. One
+        // certificate-free elimination serves both; a zero product is exactly
+        // singularity.
+        let (form, _rank) = hnf_form(&transform)?;
+        let mut radices = Vec::with_capacity(n);
+        let mut index = T::ONE;
+        for i in 0..n {
+            let radix = form.get(i, i);
+            index = index.try_mul(radix)?;
+            radices.push(radix);
+        }
+        if index.is_zero() {
+            return Err(LatticeError::Degenerate);
+        }
 
         Ok(Self {
             coding,

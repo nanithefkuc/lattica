@@ -27,7 +27,7 @@ mod matrix;
 mod snf;
 
 pub use det::{adjugate, det};
-pub use hnf::{Hnf, hnf, hnf_mod_det};
+pub use hnf::{Hnf, hnf, hnf_form, hnf_mod_det};
 pub use matrix::{IntMatrix, MAX_DIM};
 pub use snf::invariant_factors;
 

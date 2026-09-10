@@ -245,10 +245,32 @@ fn twentyfour_output_pipeline_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+/// The public array-of-structures batch at the fixed twenty-four-by-
+/// twenty-four geometry, where a dispatched adapter is measured against the
+/// portable path end to end.
+fn twentyfour_output_aos_benchmark(c: &mut Criterion) {
+    const DIMENSION: usize = 24;
+    let mut group = c.benchmark_group("real_transform_aos_24");
+    let matrix = matrix(DIMENSION);
+    for vectors in [1usize, 4, 8, 64, 257] {
+        let inputs = aos_inputs(DIMENSION, vectors);
+        let mut outputs = vec![0.0; DIMENSION * vectors];
+        group.throughput(Throughput::Elements(elements(DIMENSION, vectors)));
+        group.bench_with_input(BenchmarkId::new("public", vectors), &vectors, |b, _| {
+            b.iter(|| {
+                transform_batch(&matrix, DIMENSION, DIMENSION, &inputs, &mut outputs).unwrap();
+                black_box(&outputs);
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     sixteen_output_benchmark,
     twentyfour_output_arithmetic_benchmark,
     twentyfour_output_pipeline_benchmark,
+    twentyfour_output_aos_benchmark,
 );
 criterion_main!(benches);

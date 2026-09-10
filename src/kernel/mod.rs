@@ -59,10 +59,15 @@ pub fn transform(
 
 /// Applies one column-major transform to a flat batch of input vectors.
 ///
-/// `inputs` is strided by `rows`; `outputs` is strided by `cols`. This
-/// array-of-structures adapter remains scalar because its short strided vectors
-/// do not amortize dispatch. [`transform_batch_soa`] is the dispatched
-/// primitive for consumers that keep batches hot.
+/// `inputs` is strided by `rows`; `outputs` is strided by `cols`. On x86 v3
+/// hardware the exact twenty-four-by-twenty-four geometry dispatches through
+/// the fixed structure-of-arrays kernel: a bounded run of vectors is
+/// transposed through stack scratch, dispatched, and transposed back, so the
+/// batch stays allocation-free while lanes remain independent vectors — the
+/// result is bit-identical to the portable path. Every other geometry uses
+/// the portable kernel, whose short strided vectors do not amortize dispatch.
+/// [`transform_batch_soa`] is the dispatched primitive for consumers that
+/// keep whole batches in structure-of-arrays layout.
 ///
 /// # Errors
 ///
@@ -94,8 +99,66 @@ pub fn transform_batch(
         });
     }
 
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    if matches!(backend(), Backend::V3GfniCrypto | Backend::V3)
+        && rows == 24
+        && cols == 24
+        && vectors >= 4
+    {
+        use archmage::SimdToken;
+        // Selection stays simdispatch's single source of policy; summon only
+        // materializes the safe capability token for the selected tier.
+        if let Some(token) = archmage::X64V3Token::summon() {
+            dispatch_aos_24(token, matrix, vectors, inputs, outputs);
+            return Ok(());
+        }
+    }
     transform_batch_scalar(matrix, rows, cols, inputs, outputs);
     Ok(())
+}
+
+/// Transposes bounded runs of an array-of-structures batch through the fixed
+/// twenty-four-by-twenty-four kernel.
+///
+/// Each run is packed plane-major into stack scratch sized for `CHUNK`
+/// vectors, dispatched with the run's own lane count, and unpacked. Lanes are
+/// independent vectors, so packing changes no arithmetic: the result is
+/// bit-identical to [`transform_batch_scalar`] at every batch size, ragged
+/// tails included. The stack scratch keeps the steady state allocation-free.
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+fn dispatch_aos_24(
+    token: archmage::X64V3Token,
+    matrix: &[f64],
+    vectors: usize,
+    inputs: &[f64],
+    outputs: &mut [f64],
+) {
+    const N: usize = 24;
+    const CHUNK: usize = 64;
+    let mut input_plane = [0.0f64; N * CHUNK];
+    let mut output_plane = [0.0f64; N * CHUNK];
+    let mut offset = 0;
+    while offset < vectors {
+        let count = (vectors - offset).min(CHUNK);
+        // Pack `count` vectors plane-major: plane `r` is `input_plane[r*count..]`,
+        // exactly the layout the fixed kernel indexes with stride `count`.
+        for r in 0..N {
+            let plane = &mut input_plane[r * count..(r + 1) * count];
+            for (v, slot) in plane.iter_mut().enumerate() {
+                *slot = inputs[(offset + v) * N + r];
+            }
+        }
+        let packed = &input_plane[..N * count];
+        let packed_out = &mut output_plane[..N * count];
+        x86::transform_batch_soa_fixed_24_block12(token, matrix, count, packed, packed_out);
+        for v in 0..count {
+            let vector = &mut outputs[(offset + v) * N..(offset + v + 1) * N];
+            for (r, slot) in vector.iter_mut().enumerate() {
+                *slot = output_plane[r * count + v];
+            }
+        }
+        offset += count;
+    }
 }
 
 /// Applies a transform to a structure-of-arrays batch.
@@ -382,6 +445,23 @@ mod tests {
                 transform_batch_soa(&matrix, rows, 24, vectors, &inputs, &mut got).unwrap();
                 assert_eq!(got, want, "{rows}x24, {vectors} vectors");
             }
+        }
+    }
+
+    #[test]
+    fn dispatched_aos_batches_match_scalar_at_the_fixed_geometry() {
+        let matrix: Vec<f64> = (0..24 * 24)
+            .map(|i| (f64::from(u32::try_from(i).unwrap()) - 287.0) / 64.0)
+            .collect();
+        for vectors in (4..=17).chain([31, 63, 64, 65, 127, 128, 129, 257]) {
+            let inputs: Vec<f64> = (0..24 * vectors)
+                .map(|i| (f64::from(u32::try_from(i % 251).unwrap()) - 125.0) / 16.0)
+                .collect();
+            let mut want = vec![0.0; 24 * vectors];
+            transform_batch_scalar(&matrix, 24, 24, &inputs, &mut want);
+            let mut got = vec![0.0; 24 * vectors];
+            transform_batch(&matrix, 24, 24, &inputs, &mut got).unwrap();
+            assert_eq!(got, want, "24x24 AoS, {vectors} vectors");
         }
     }
 

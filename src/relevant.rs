@@ -102,13 +102,100 @@ pub fn relevant_vectors<T: Int>(
     gram: &Gram<T>,
     node_budget: u64,
 ) -> Result<Vec<Vec<i128>>, EnumerationError> {
+    check_dimension(gram.dim())?;
+    let components = orthogonal_components(gram);
+    if components.len() <= 1 {
+        return Ok(relevant_connected(gram, node_budget)?.0);
+    }
+
+    // An orthogonal direct sum's Voronoi cell is the product of the cells,
+    // and a product's facets are exactly the factors' facets: a vector with
+    // components in two summands is never relevant, because flipping the
+    // sign of one component gives a distinct vector of the same norm in the
+    // same coset. The relevant set is the union of the components', embedded
+    // into the full coordinates, with every component's walk charged against
+    // the one aggregate budget.
+    let dimension = gram.dim();
+    let mut remaining = node_budget;
+    let mut all = Vec::new();
+    for component in &components {
+        let block = component_gram(gram, component);
+        let (vectors, nodes) = relevant_connected(&block, remaining)?;
+        remaining -= nodes;
+        for vector in vectors {
+            let mut embedded = vec![0i128; dimension];
+            for (position, &index) in component.iter().enumerate() {
+                embedded[index] = vector[position];
+            }
+            all.push(embedded);
+        }
+    }
+    all.sort();
+    Ok(all)
+}
+
+/// The connected components of the Gram matrix's off-diagonal support: the
+/// maximal orthogonal direct-sum decomposition of the lattice.
+fn orthogonal_components<T: Int>(gram: &Gram<T>) -> Vec<Vec<usize>> {
+    let n = gram.dim();
+    let mut seen = vec![false; n];
+    let mut components = Vec::new();
+    for start in 0..n {
+        if seen[start] {
+            continue;
+        }
+        seen[start] = true;
+        let mut component = vec![start];
+        let mut cursor = 0;
+        while cursor < component.len() {
+            let i = component[cursor];
+            cursor += 1;
+            let mut newly_seen = Vec::new();
+            for (j, &visited) in seen.iter().enumerate() {
+                if !visited && j != i && !gram.entry(i, j).is_zero() {
+                    newly_seen.push(j);
+                }
+            }
+            for j in newly_seen {
+                seen[j] = true;
+                component.push(j);
+            }
+        }
+        component.sort_unstable();
+        components.push(component);
+    }
+    components
+}
+
+/// The Gram matrix of one component's sublattice, in the component's sorted
+/// index order.
+fn component_gram<T: Int>(gram: &Gram<T>, component: &[usize]) -> Gram<T> {
+    let k = component.len();
+    let mut data = vec![T::ZERO; k * k];
+    for (r, &i) in component.iter().enumerate() {
+        for (c, &j) in component.iter().enumerate() {
+            data[r * k + c] = gram.entry(i, j);
+        }
+    }
+    // A principal submatrix of a Gram matrix is square and symmetric, and
+    // `k <= MAX_RELEVANT_DIM` is far below the dimension limit, so the
+    // checked constructor cannot reject it.
+    Gram::from_rows(k, &data).expect("a principal submatrix of a Gram matrix")
+}
+
+/// The connected case: one parity-coset classification walk over the whole
+/// form. Returns the relevant vectors and the nodes the walk spent.
+fn relevant_connected<T: Int>(
+    gram: &Gram<T>,
+    node_budget: u64,
+) -> Result<(Vec<Vec<i128>>, u64), EnumerationError> {
     let (coset_count, radius_sq) = radius_for_parity_ball(gram)?;
     if coset_count == 0 {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), 0));
     }
     let mut minima = CosetMinima::new(coset_count, gram.dim());
-    collect_coset_minima_with(gram, radius_sq, node_budget, &mut minima, &mut NoSink)?;
-    Ok(materialize_relevant(&minima))
+    let nodes = collect_coset_minima_with(gram, radius_sq, node_budget, &mut minima, &mut NoSink)?;
+    Ok((materialize_relevant(&minima), nodes))
 }
 
 /// Computes the parity-coset count and the smallest radius whose ball holds a
@@ -148,13 +235,13 @@ fn collect_coset_minima_with<T: Int, S: CosetSink>(
     node_budget: u64,
     minima: &mut CosetMinima,
     sink: &mut S,
-) -> Result<(), EnumerationError> {
-    for_each_short(gram, radius_sq, node_budget, |coordinates, norm_sq| {
+) -> Result<u64, EnumerationError> {
+    let nodes = for_each_short(gram, radius_sq, node_budget, |coordinates, norm_sq| {
         sink.emission();
         let mask = parity_mask(coordinates);
         minima.offer(mask, coordinates, norm_sq, sink);
     })?;
-    Ok(())
+    Ok(nodes)
 }
 
 fn materialize_relevant(minima: &CosetMinima) -> Vec<Vec<i128>> {
@@ -245,19 +332,67 @@ pub fn relevant_vectors_profiled<T: Int>(
     gram: &Gram<T>,
     node_budget: u64,
 ) -> Result<(Vec<Vec<i128>>, RelevantStats), EnumerationError> {
+    check_dimension(gram.dim())?;
+    let components = orthogonal_components(gram);
+    if components.len() <= 1 {
+        let (vectors, stats, _nodes) = relevant_connected_profiled(gram, node_budget)?;
+        return Ok((vectors, stats));
+    }
+
+    // Same decomposition as `relevant_vectors`, with each component's
+    // counters summed so the profiled totals describe the whole call.
+    let dimension = gram.dim();
+    let mut remaining = node_budget;
+    let mut total = RelevantStats::default();
+    let mut all = Vec::new();
+    for component in &components {
+        let block = component_gram(gram, component);
+        let (vectors, stats, nodes) = relevant_connected_profiled(&block, remaining)?;
+        remaining -= nodes;
+        total.setup_ns = total.setup_ns.saturating_add(stats.setup_ns);
+        total.walk_ns = total.walk_ns.saturating_add(stats.walk_ns);
+        total.finalize_ns = total.finalize_ns.saturating_add(stats.finalize_ns);
+        total.masks = total.masks.saturating_add(stats.masks);
+        total.emissions = total.emissions.saturating_add(stats.emissions);
+        total.coset_resets = total.coset_resets.saturating_add(stats.coset_resets);
+        total.ties_stored = total.ties_stored.saturating_add(stats.ties_stored);
+        for vector in vectors {
+            let mut embedded = vec![0i128; dimension];
+            for (position, &index) in component.iter().enumerate() {
+                embedded[index] = vector[position];
+            }
+            all.push(embedded);
+        }
+    }
+    let finalize_start = Instant::now();
+    all.sort();
+    total.finalize_ns = total
+        .finalize_ns
+        .saturating_add(u64::try_from(finalize_start.elapsed().as_nanos()).unwrap_or(u64::MAX));
+    total.output_len = u64::try_from(all.len()).unwrap_or(u64::MAX);
+    Ok((all, total))
+}
+
+/// The profiled connected case: the original single-walk stage split, plus
+/// the walk's node count so the decomposed path can charge one budget.
+#[cfg(feature = "internals")]
+fn relevant_connected_profiled<T: Int>(
+    gram: &Gram<T>,
+    node_budget: u64,
+) -> Result<(Vec<Vec<i128>>, RelevantStats, u64), EnumerationError> {
     let mut stats = RelevantStats::default();
     let setup_start = Instant::now();
     let (coset_count, radius_sq) = radius_for_parity_ball(gram)?;
     stats.setup_ns = u64::try_from(setup_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
     stats.masks = u64::try_from(coset_count.saturating_sub(1)).unwrap_or(u64::MAX);
     if coset_count == 0 {
-        return Ok((Vec::new(), stats));
+        return Ok((Vec::new(), stats, 0));
     }
 
     let mut minima = CosetMinima::new(coset_count, gram.dim());
     let mut sink = CountingSink::default();
     let walk_start = Instant::now();
-    collect_coset_minima_with(gram, radius_sq, node_budget, &mut minima, &mut sink)?;
+    let nodes = collect_coset_minima_with(gram, radius_sq, node_budget, &mut minima, &mut sink)?;
     stats.walk_ns = u64::try_from(walk_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
     stats.emissions = sink.emissions;
     stats.coset_resets = sink.resets;
@@ -267,7 +402,7 @@ pub fn relevant_vectors_profiled<T: Int>(
     let relevant = materialize_relevant(&minima);
     stats.finalize_ns = u64::try_from(finalize_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
     stats.output_len = u64::try_from(relevant.len()).unwrap_or(u64::MAX);
-    Ok((relevant, stats))
+    Ok((relevant, stats, nodes))
 }
 
 fn parity_mask(coordinates: &[i128]) -> usize {
@@ -283,13 +418,29 @@ fn parity_mask(coordinates: &[i128]) -> usize {
         })
 }
 
+/// The cap applies to the *lattice* dimension, before any decomposition: a
+/// seventeen-dimensional diagonal Gram is still over the budget even though
+/// every component is one-dimensional.
+fn check_dimension(n: usize) -> Result<(), EnumerationError> {
+    if n > MAX_RELEVANT_DIM {
+        return Err(RangeError::Dimension {
+            requested: n,
+            max: MAX_RELEVANT_DIM,
+        }
+        .into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "internals")]
     use super::relevant_vectors_profiled;
     use super::{MAX_RELEVANT_DIM, relevant_vectors};
     use crate::basis::Gram;
+    use crate::error::EnumerationError;
     use crate::named::{a_n, d_n, e8, zn};
+    use crate::shortvec::DEFAULT_NODE_BUDGET;
 
     #[test]
     fn a_zero_dimensional_lattice_has_no_relevant_vectors() {
@@ -382,6 +533,55 @@ mod tests {
                     max: MAX_RELEVANT_DIM
                 }
             ))
+        ));
+    }
+    #[test]
+    fn an_orthogonal_sum_exposes_each_components_facets() {
+        // Z^6 is six one-dimensional summands; its Voronoi cell is a cube,
+        // whose facets are exactly the ±e_i pairs.
+        let cube = zn::<i64>(6).unwrap();
+        let vectors = relevant_vectors(&cube, DEFAULT_NODE_BUDGET).unwrap();
+        let mut expected = Vec::new();
+        for i in 0..6 {
+            let mut plus = vec![0i128; 6];
+            plus[i] = 1;
+            let mut minus = vec![0i128; 6];
+            minus[i] = -1;
+            expected.push(minus);
+            expected.push(plus);
+        }
+        expected.sort();
+        assert_eq!(vectors, expected);
+
+        // Two hexagonal summands: the cell is the product of two hexagons,
+        // so the facet count doubles and every facet lives in exactly one
+        // summand's coordinates.
+        let mut data = [0i64; 16];
+        let hex = [2i64, -1, -1, 2];
+        data[0] = hex[0];
+        data[1] = hex[1];
+        data[4] = hex[1];
+        data[5] = hex[0];
+        data[10] = hex[0];
+        data[11] = hex[1];
+        data[14] = hex[1];
+        data[15] = hex[0];
+        let pair = Gram::<i64>::from_rows(4, &data).unwrap();
+        let vectors = relevant_vectors(&pair, DEFAULT_NODE_BUDGET).unwrap();
+        assert_eq!(vectors.len(), 12);
+        for vector in &vectors {
+            let first = vector[0] != 0 || vector[1] != 0;
+            let second = vector[2] != 0 || vector[3] != 0;
+            assert!(first ^ second, "facet spans both summands: {vector:?}");
+        }
+    }
+
+    #[test]
+    fn decomposed_walks_share_one_budget() {
+        let cube = zn::<i64>(12).unwrap();
+        assert!(matches!(
+            relevant_vectors(&cube, 1),
+            Err(EnumerationError::EnumerationBudget { .. })
         ));
     }
 }

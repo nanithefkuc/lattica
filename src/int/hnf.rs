@@ -55,11 +55,55 @@ pub struct Hnf<T: Int> {
 /// # Ok::<(), lattica::RangeError>(())
 /// ```
 pub fn hnf<T: Int>(a: &IntMatrix<T>) -> Result<Hnf<T>, RangeError> {
-    let rows = a.rows();
-    let cols = a.cols();
-
     let mut h = a.clone();
-    let mut u = IntMatrix::<T>::identity(rows)?;
+    let mut u = IntMatrix::<T>::identity(a.rows())?;
+    let rank = eliminate(&mut h, Some(&mut u))?;
+    Ok(Hnf { h, u, rank })
+}
+
+/// Reduces an integer matrix to its row Hermite Normal Form without the
+/// unimodular transform.
+///
+/// The form, pivot structure, and rank are identical to [`hnf`] — the two
+/// functions share one elimination sequence — but the `rows`-by-`rows`
+/// transform matrix is never allocated or updated. Callers that use only the
+/// form or the rank (generator constructions, rank queries) pay for the form;
+/// anyone who needs the certificate keeps [`hnf`].
+///
+/// # Errors
+///
+/// As [`hnf`]; a rejected call leaves the input untouched, and on this path
+/// there is no partially updated transform to leave behind at all.
+///
+/// # Examples
+///
+/// ```
+/// use lattica::int::{IntMatrix, hnf, hnf_form};
+///
+/// let a = IntMatrix::<i64>::from_rows(2, 2, &[3, 5, 1, 2])?;
+/// let (form, rank) = hnf_form(&a)?;
+/// let certified = hnf(&a)?;
+/// // One elimination sequence: the forms agree entry for entry.
+/// assert_eq!(form, certified.h);
+/// assert_eq!(rank, certified.rank);
+/// # Ok::<(), lattica::RangeError>(())
+/// ```
+pub fn hnf_form<T: Int>(a: &IntMatrix<T>) -> Result<(IntMatrix<T>, usize), RangeError> {
+    let mut h = a.clone();
+    let rank = eliminate(&mut h, None)?;
+    Ok((h, rank))
+}
+
+/// The shared Euclidean elimination: drives each column below its pivot to a
+/// single smallest entry, then reduces above the pivot into its range. `u`,
+/// when supplied, receives every row operation, which is what makes `hnf`'s
+/// transform a certificate for the form `hnf_form` returns.
+fn eliminate<T: Int>(
+    h: &mut IntMatrix<T>,
+    mut u: Option<&mut IntMatrix<T>>,
+) -> Result<usize, RangeError> {
+    let rows = h.rows();
+    let cols = h.cols();
     let mut pivot_row = 0usize;
 
     for col in 0..cols {
@@ -69,9 +113,11 @@ pub fn hnf<T: Int>(a: &IntMatrix<T>) -> Result<Hnf<T>, RangeError> {
 
         // Drive the column below `pivot_row` to a single nonzero entry. Each
         // pass either finishes the column or strictly reduces the pivot.
-        while let Some(smallest) = smallest_nonzero(&h, pivot_row, rows, col)? {
+        while let Some(smallest) = smallest_nonzero(h, pivot_row, rows, col)? {
             h.swap_rows(pivot_row, smallest);
-            u.swap_rows(pivot_row, smallest);
+            if let Some(u) = u.as_mut() {
+                u.swap_rows(pivot_row, smallest);
+            }
 
             let pivot = h.get(pivot_row, col);
             let mut cleared = true;
@@ -82,7 +128,9 @@ pub fn hnf<T: Int>(a: &IntMatrix<T>) -> Result<Hnf<T>, RangeError> {
                 }
                 let q = div_nearest(entry, pivot)?;
                 h.row_sub_mul(i, pivot_row, q)?;
-                u.row_sub_mul(i, pivot_row, q)?;
+                if let Some(u) = u.as_mut() {
+                    u.row_sub_mul(i, pivot_row, q)?;
+                }
                 if !h.get(i, col).is_zero() {
                     cleared = false;
                 }
@@ -98,7 +146,9 @@ pub fn hnf<T: Int>(a: &IntMatrix<T>) -> Result<Hnf<T>, RangeError> {
 
         if h.get(pivot_row, col).is_negative() {
             h.negate_row(pivot_row)?;
-            u.negate_row(pivot_row)?;
+            if let Some(u) = u.as_mut() {
+                u.negate_row(pivot_row)?;
+            }
         }
 
         // Reduce above the pivot into `[0, pivot)`. Rows above have zeros in
@@ -111,17 +161,15 @@ pub fn hnf<T: Int>(a: &IntMatrix<T>) -> Result<Hnf<T>, RangeError> {
             }
             let q = entry.try_div_floor(pivot)?;
             h.row_sub_mul(i, pivot_row, q)?;
-            u.row_sub_mul(i, pivot_row, q)?;
+            if let Some(u) = u.as_mut() {
+                u.row_sub_mul(i, pivot_row, q)?;
+            }
         }
 
         pivot_row += 1;
     }
 
-    Ok(Hnf {
-        h,
-        u,
-        rank: pivot_row,
-    })
+    Ok(pivot_row)
 }
 
 /// Index of the row in `start..end` whose entry in `col` is nonzero and
