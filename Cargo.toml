@@ -8,6 +8,10 @@ description = "Shared arithmetic for point lattices, underneath lattice-based er
 repository = "https://github.com/nanithefkuc/lattica"
 keywords = ["lattice", "quantization", "erasure-coding", "coding-theory"]
 categories = ["algorithms", "mathematics"]
+# The competitor harnesses under `external/` are repository-only tooling, not
+# crate targets: each is its own unpublished package, and this exclusion keeps
+# every one of them out of `cargo package`.
+exclude = ["external/"]
 
 [features]
 default = ["simd"]
@@ -30,12 +34,12 @@ harness = false
 required-features = ["internals"]
 
 [[bench]]
-name = "fplll_compare"
-harness = false
-
-[[bench]]
 name = "optimization"
 harness = false
+required-features = ["internals"]
+
+[[test]]
+name = "zero_alloc_internals"
 required-features = ["internals"]
 
 [lints.rust]
@@ -50,3 +54,11 @@ cargo = { level = "warn", priority = -1 }
 as_conversions = "warn"
 cast_possible_truncation = "warn"
 float_cmp = "warn"
+
+# Release codegen a profiler can attribute: opt-level 3 with full debug info
+# and no symbol stripping. Frame pointers come from RUSTFLAGS in `just
+# profile-perf`, since they are not a Cargo profile key.
+[profile.profiling]
+inherits = "release"
+debug = "full"
+strip = "none"

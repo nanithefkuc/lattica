@@ -103,31 +103,6 @@ where
     for_each_short_observed(gram, radius_sq, budget, visit, &mut Unobserved)
 }
 
-/// Enumerates while returning unstable benchmark counters.
-///
-/// Available only with `internals`; counters are not a compatibility promise.
-/// The returned node count matches [`for_each_short`]; allocation counts are
-/// measured externally by the benchmark harness, not here.
-///
-/// # Errors
-///
-/// As [`for_each_short`].
-#[cfg(feature = "internals")]
-pub fn for_each_short_profiled<T, F>(
-    gram: &Gram<T>,
-    radius_sq: i128,
-    budget: u64,
-    visit: F,
-) -> Result<(u64, EnumerationStats), EnumerationError>
-where
-    T: Int,
-    F: FnMut(&[i128], i128),
-{
-    let mut stats = EnumerationStats::default();
-    let nodes = for_each_short_observed(gram, radius_sq, budget, visit, &mut stats)?;
-    Ok((nodes, stats))
-}
-
 trait EnumerationObserver {
     fn node(&mut self) {}
     fn leaf(&mut self) {}
@@ -154,41 +129,6 @@ impl<O: EnumerationObserver> EnumerationObserver for &mut O {
 
     fn leaf_norm(&mut self) {
         (**self).leaf_norm();
-    }
-}
-
-/// Internal operation counters for exact short-vector enumeration benchmarks.
-///
-/// Available only with `internals`; counters are not a compatibility promise.
-#[cfg(feature = "internals")]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct EnumerationStats {
-    /// Depth-first nodes visited: every recursion entry of the walk.
-    pub nodes: u64,
-    /// Complete coordinate assignments evaluated, including the all-zero one.
-    pub leaves: u64,
-    /// Exact multiply-add terms formed by the amortized per-level tail sums.
-    pub tail_terms: u64,
-    /// Exact norms derived at leaves from the accumulated scaled sum.
-    pub leaf_norms: u64,
-}
-
-#[cfg(feature = "internals")]
-impl EnumerationObserver for EnumerationStats {
-    fn node(&mut self) {
-        self.nodes += 1;
-    }
-
-    fn leaf(&mut self) {
-        self.leaves += 1;
-    }
-
-    fn tail_term(&mut self) {
-        self.tail_terms += 1;
-    }
-
-    fn leaf_norm(&mut self) {
-        self.leaf_norms += 1;
     }
 }
 
@@ -364,186 +304,6 @@ fn census_core<T: Int, O: EnumerationObserver>(
         total,
         nodes,
     })
-}
-
-/// Counts short vectors while returning unstable benchmark counters.
-///
-/// Available only with `internals`; counters are not a compatibility promise.
-/// The [`Census`] matches [`census`] exactly on the same input.
-///
-/// # Errors
-///
-/// As [`census`].
-///
-/// # Panics
-///
-/// Never: the only `expect` is guarded by the zero-dimension early return
-/// immediately above it.
-#[cfg(feature = "internals")]
-pub fn census_profiled<T: Int>(
-    gram: &Gram<T>,
-    budget: u64,
-) -> Result<(Census<T>, EnumerationStats), EnumerationError> {
-    let mut buffers = Buffers::new(gram.dim());
-    let mut stats = EnumerationStats::default();
-    let census = census_core(&mut buffers, gram, budget, &mut stats)?;
-    Ok((census, stats))
-}
-
-/// Reusable exact-enumeration buffers for one dimension.
-///
-/// The scratch holds the factored form's working storage across calls: the
-/// widened Gram factored in place, the cleared-denominator weights, and the
-/// depth-first coordinates. Each call re-factors its Gram, so the scratch
-/// carries no lattice between calls — only the allocation.
-///
-/// A rejected call leaves the scratch reusable, though not untouched: the
-/// factorization's positive-definiteness test, fallible narrowing, i128
-/// overflow, and budget exhaustion can all fire after buffers are written.
-/// None of that state is observable — only [`dim`](Self::dim) is exposed —
-/// and no later call can read it: every coordinates read follows a write
-/// on the current walk.
-///
-/// Available only with `internals`; not a compatibility promise.
-#[cfg(feature = "internals")]
-pub struct EnumerationScratch {
-    dim: usize,
-    buffers: Buffers,
-}
-
-#[cfg(feature = "internals")]
-impl EnumerationScratch {
-    /// Allocates enumeration buffers for `dimension`.
-    ///
-    /// # Errors
-    ///
-    /// [`RangeError::Dimension`] if `dimension` exceeds the crate's maximum
-    /// matrix dimension.
-    pub fn new(dimension: usize) -> Result<Self, EnumerationError> {
-        if dimension > crate::int::MAX_DIM {
-            return Err(RangeError::Dimension {
-                requested: dimension,
-                max: crate::int::MAX_DIM,
-            }
-            .into());
-        }
-        Ok(Self {
-            dim: dimension,
-            buffers: Buffers::new(dimension),
-        })
-    }
-
-    /// The dimension this scratch was sized for.
-    #[must_use]
-    pub const fn dim(&self) -> usize {
-        self.dim
-    }
-
-    /// Enumerates short vectors over reused buffers, identical to
-    /// [`for_each_short`] on the input.
-    ///
-    /// # Errors
-    ///
-    /// [`RangeError::Shape`] if `gram.dim()` does not equal
-    /// [`Self::dim`]; otherwise as [`for_each_short`].
-    pub fn for_each<T, F>(
-        &mut self,
-        gram: &Gram<T>,
-        radius_sq: i128,
-        budget: u64,
-        visit: F,
-    ) -> Result<u64, EnumerationError>
-    where
-        T: Int,
-        F: FnMut(&[i128], i128),
-    {
-        if gram.dim() != self.dim {
-            return Err(RangeError::Shape {
-                expected: self.dim,
-                found: gram.dim(),
-            }
-            .into());
-        }
-        if gram.dim() == 0 {
-            return Ok(0);
-        }
-        if radius_sq < 0 {
-            return Err(EnumerationError::InvalidRadius { radius_sq });
-        }
-        enumerate_with(
-            &mut self.buffers,
-            gram,
-            radius_sq,
-            budget,
-            visit,
-            &mut Unobserved,
-        )
-    }
-
-    /// Counts short vectors over reused buffers, identical to [`census`] on
-    /// the input.
-    ///
-    /// # Errors
-    ///
-    /// [`RangeError::Shape`] if `gram.dim()` does not equal
-    /// [`Self::dim`]; otherwise as [`census`].
-    pub fn census<T: Int>(
-        &mut self,
-        gram: &Gram<T>,
-        budget: u64,
-    ) -> Result<Census<T>, EnumerationError> {
-        if gram.dim() != self.dim {
-            return Err(RangeError::Shape {
-                expected: self.dim,
-                found: gram.dim(),
-            }
-            .into());
-        }
-        census_core(&mut self.buffers, gram, budget, &mut Unobserved)
-    }
-
-    /// Enumerates over the leading entries of oversized buffers: the
-    /// component case of a decomposed lattice, where the stride is the
-    /// component dimension rather than the scratch dimension.
-    ///
-    /// Crate-internal: the caller guarantees `gram.dim()` fits the buffers.
-    /// Only [`RelevantScratch`](crate::relevant::RelevantScratch) calls this,
-    /// which sizes its buffers for the whole lattice.
-    ///
-    /// # Errors
-    ///
-    /// As [`for_each`](EnumerationScratch::for_each).
-    #[cfg(feature = "internals")]
-    pub(crate) fn for_each_prefix<T, F>(
-        &mut self,
-        gram: &Gram<T>,
-        radius_sq: i128,
-        budget: u64,
-        visit: F,
-    ) -> Result<u64, EnumerationError>
-    where
-        T: Int,
-        F: FnMut(&[i128], i128),
-    {
-        if gram.dim() > self.dim {
-            return Err(RangeError::Shape {
-                expected: self.dim,
-                found: gram.dim(),
-            }
-            .into());
-        }
-        if radius_sq < 0 {
-            return Err(EnumerationError::InvalidRadius { radius_sq });
-        }
-        enumerate_with(
-            &mut self.buffers,
-            gram,
-            radius_sq,
-            budget,
-            visit,
-            &mut Unobserved,
-        )
-    }
 }
 
 /// Factors the widened Gram into caller-owned buffers: `upper` holds the
@@ -764,13 +524,252 @@ fn floor_div(a: i128, b: i128) -> i128 {
 fn ceil_div(a: i128, b: i128) -> i128 {
     -floor_div(-a, b)
 }
+/// Unstable short-vector enumeration surface: benchmark counters and reusable
+/// buffers. Reachable externally only through the `internals` facade.
+// Unstable items are reachable only through the `internals` facade, so the
+// library target without that feature reports them as unused.
+#[allow(dead_code)]
+pub(crate) mod unstable {
+    use super::{
+        Buffers, Census, EnumerationError, EnumerationObserver, Gram, Int, RangeError, Unobserved,
+        census_core, enumerate_with, for_each_short_observed,
+    };
+    /// Enumerates while returning unstable benchmark counters.
+    ///
+    /// Reachable only through the `internals` facade; counters are not a compatibility promise.
+    /// The returned node count matches [`for_each_short`](super::for_each_short); allocation counts are
+    /// measured externally by the benchmark harness, not here.
+    ///
+    /// # Errors
+    ///
+    /// As [`for_each_short`](super::for_each_short).
+    pub fn for_each_short_profiled<T, F>(
+        gram: &Gram<T>,
+        radius_sq: i128,
+        budget: u64,
+        visit: F,
+    ) -> Result<(u64, EnumerationStats), EnumerationError>
+    where
+        T: Int,
+        F: FnMut(&[i128], i128),
+    {
+        let mut stats = EnumerationStats::default();
+        let nodes = for_each_short_observed(gram, radius_sq, budget, visit, &mut stats)?;
+        Ok((nodes, stats))
+    }
+    /// Internal operation counters for exact short-vector enumeration benchmarks.
+    ///
+    /// Reachable only through the `internals` facade; counters are not a compatibility promise.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct EnumerationStats {
+        /// Depth-first nodes visited: every recursion entry of the walk.
+        pub nodes: u64,
+        /// Complete coordinate assignments evaluated, including the all-zero one.
+        pub leaves: u64,
+        /// Exact multiply-add terms formed by the amortized per-level tail sums.
+        pub tail_terms: u64,
+        /// Exact norms derived at leaves from the accumulated scaled sum.
+        pub leaf_norms: u64,
+    }
+
+    impl EnumerationObserver for EnumerationStats {
+        fn node(&mut self) {
+            self.nodes += 1;
+        }
+
+        fn leaf(&mut self) {
+            self.leaves += 1;
+        }
+
+        fn tail_term(&mut self) {
+            self.tail_terms += 1;
+        }
+
+        fn leaf_norm(&mut self) {
+            self.leaf_norms += 1;
+        }
+    }
+    /// Counts short vectors while returning unstable benchmark counters.
+    ///
+    /// Reachable only through the `internals` facade; counters are not a compatibility promise.
+    /// The [`Census`] matches [`census`](super::census) exactly on the same input.
+    ///
+    /// # Errors
+    ///
+    /// As [`census`](super::census).
+    ///
+    /// # Panics
+    ///
+    /// Never: the only `expect` is guarded by the zero-dimension early return
+    /// immediately above it.
+    pub fn census_profiled<T: Int>(
+        gram: &Gram<T>,
+        budget: u64,
+    ) -> Result<(Census<T>, EnumerationStats), EnumerationError> {
+        let mut buffers = Buffers::new(gram.dim());
+        let mut stats = EnumerationStats::default();
+        let census = census_core(&mut buffers, gram, budget, &mut stats)?;
+        Ok((census, stats))
+    }
+    /// Reusable exact-enumeration buffers for one dimension.
+    ///
+    /// The scratch holds the factored form's working storage across calls: the
+    /// widened Gram factored in place, the cleared-denominator weights, and the
+    /// depth-first coordinates. Each call re-factors its Gram, so the scratch
+    /// carries no lattice between calls — only the allocation.
+    ///
+    /// A rejected call leaves the scratch reusable, though not untouched: the
+    /// factorization's positive-definiteness test, fallible narrowing, i128
+    /// overflow, and budget exhaustion can all fire after buffers are written.
+    /// None of that state is observable — only [`dim`](Self::dim) is exposed —
+    /// and no later call can read it: every coordinates read follows a write
+    /// on the current walk.
+    ///
+    /// Reachable only through the `internals` facade; not a compatibility promise.
+    pub struct EnumerationScratch {
+        dim: usize,
+        buffers: Buffers,
+    }
+
+    impl EnumerationScratch {
+        /// Allocates enumeration buffers for `dimension`.
+        ///
+        /// # Errors
+        ///
+        /// [`RangeError::Dimension`] if `dimension` exceeds the crate's maximum
+        /// matrix dimension.
+        pub fn new(dimension: usize) -> Result<Self, EnumerationError> {
+            if dimension > crate::int::MAX_DIM {
+                return Err(RangeError::Dimension {
+                    requested: dimension,
+                    max: crate::int::MAX_DIM,
+                }
+                .into());
+            }
+            Ok(Self {
+                dim: dimension,
+                buffers: Buffers::new(dimension),
+            })
+        }
+
+        /// The dimension this scratch was sized for.
+        #[must_use]
+        pub const fn dim(&self) -> usize {
+            self.dim
+        }
+
+        /// Enumerates short vectors over reused buffers, identical to
+        /// [`for_each_short`](super::for_each_short) on the input.
+        ///
+        /// # Errors
+        ///
+        /// [`RangeError::Shape`] if `gram.dim()` does not equal
+        /// [`Self::dim`]; otherwise as [`for_each_short`](super::for_each_short).
+        pub fn for_each<T, F>(
+            &mut self,
+            gram: &Gram<T>,
+            radius_sq: i128,
+            budget: u64,
+            visit: F,
+        ) -> Result<u64, EnumerationError>
+        where
+            T: Int,
+            F: FnMut(&[i128], i128),
+        {
+            if gram.dim() != self.dim {
+                return Err(RangeError::Shape {
+                    expected: self.dim,
+                    found: gram.dim(),
+                }
+                .into());
+            }
+            if gram.dim() == 0 {
+                return Ok(0);
+            }
+            if radius_sq < 0 {
+                return Err(EnumerationError::InvalidRadius { radius_sq });
+            }
+            enumerate_with(
+                &mut self.buffers,
+                gram,
+                radius_sq,
+                budget,
+                visit,
+                &mut Unobserved,
+            )
+        }
+
+        /// Counts short vectors over reused buffers, identical to [`census`](super::census) on
+        /// the input.
+        ///
+        /// # Errors
+        ///
+        /// [`RangeError::Shape`] if `gram.dim()` does not equal
+        /// [`Self::dim`]; otherwise as [`census`](super::census).
+        pub fn census<T: Int>(
+            &mut self,
+            gram: &Gram<T>,
+            budget: u64,
+        ) -> Result<Census<T>, EnumerationError> {
+            if gram.dim() != self.dim {
+                return Err(RangeError::Shape {
+                    expected: self.dim,
+                    found: gram.dim(),
+                }
+                .into());
+            }
+            census_core(&mut self.buffers, gram, budget, &mut Unobserved)
+        }
+
+        /// Enumerates over the leading entries of oversized buffers: the
+        /// component case of a decomposed lattice, where the stride is the
+        /// component dimension rather than the scratch dimension.
+        ///
+        /// Crate-internal: the caller guarantees `gram.dim()` fits the buffers.
+        /// Only the relevant-vector scratch calls this, which sizes its buffers
+        /// for the whole lattice.
+        ///
+        /// # Errors
+        ///
+        /// As [`for_each`](EnumerationScratch::for_each).
+        pub(crate) fn for_each_prefix<T, F>(
+            &mut self,
+            gram: &Gram<T>,
+            radius_sq: i128,
+            budget: u64,
+            visit: F,
+        ) -> Result<u64, EnumerationError>
+        where
+            T: Int,
+            F: FnMut(&[i128], i128),
+        {
+            if gram.dim() > self.dim {
+                return Err(RangeError::Shape {
+                    expected: self.dim,
+                    found: gram.dim(),
+                }
+                .into());
+            }
+            if radius_sq < 0 {
+                return Err(EnumerationError::InvalidRadius { radius_sq });
+            }
+            enumerate_with(
+                &mut self.buffers,
+                gram,
+                radius_sq,
+                budget,
+                visit,
+                &mut Unobserved,
+            )
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::{DEFAULT_NODE_BUDGET, census, for_each_short};
     use crate::basis::Gram;
     use crate::error::EnumerationError;
-    #[cfg(feature = "internals")]
     use crate::error::RangeError;
 
     #[test]
@@ -856,10 +855,9 @@ mod tests {
         assert_eq!(seen, 0);
     }
 
-    #[cfg(feature = "internals")]
     #[test]
     fn profiled_counters_partition_the_walk() {
-        use super::{census, census_profiled, for_each_short_profiled};
+        use super::unstable::{EnumerationStats, census_profiled, for_each_short_profiled};
         use crate::named::{e8, zn};
 
         // A zero-dimensional Gram short-circuits every entry point.
@@ -869,7 +867,7 @@ mod tests {
         assert_eq!(public.min_norm_sq, None);
         let (census, stats) = census_profiled(&empty, DEFAULT_NODE_BUDGET).unwrap();
         assert_eq!(census.total, 0);
-        assert_eq!(stats, super::EnumerationStats::default());
+        assert_eq!(stats, EnumerationStats::default());
         assert_eq!(
             for_each_short_profiled(&empty, 4, 8, |_, _| {}).unwrap(),
             (0, stats)
@@ -903,7 +901,6 @@ mod tests {
         assert_eq!(stats.leaves, 241);
     }
 
-    #[cfg(feature = "internals")]
     #[test]
     fn carried_norms_match_the_direct_quadratic_form() {
         use super::{Unobserved, for_each_short_observed};
@@ -951,10 +948,9 @@ mod tests {
     /// The reusable scratch visits the same vectors with the same norms and
     /// counts the same census as the one-shots, twice in a row over the
     /// same buffers.
-    #[cfg(feature = "internals")]
     #[test]
     fn scratch_matches_the_one_shots() {
-        use super::EnumerationScratch;
+        use super::unstable::EnumerationScratch;
         use crate::named::{d_n, e8, zn};
 
         let cases: Vec<(Gram<i64>, i128)> = vec![
