@@ -26,7 +26,9 @@ mod hnf;
 mod matrix;
 mod snf;
 
-pub use det::{adjugate, det};
+#[cfg(feature = "internals")]
+pub use det::adjugate_profiled;
+pub use det::{AdjugatePath, adjugate, det};
 pub use hnf::{Hnf, hnf, hnf_form, hnf_mod_det};
 pub use matrix::{IntMatrix, MAX_DIM};
 pub use snf::invariant_factors;

@@ -190,3 +190,74 @@ fn prepared_reduction_allocates_only_its_results() {
         "one-shot reduction allocated {one_shot_allocations} times"
     );
 }
+
+#[test]
+#[cfg(feature = "internals")]
+fn prepared_enumeration_allocates_nothing_steady_state() {
+    use lattica::shortvec::{EnumerationScratch, census, for_each_short};
+
+    const DIMENSION: usize = 8;
+    const BUDGET: u64 = 1 << 20;
+    let gram = skewed_gram(DIMENSION);
+    let mut scratch = EnumerationScratch::new(DIMENSION).unwrap();
+
+    // Warm every path once, then count steady-state calls. Neither call
+    // owns heap output, so both must allocate nothing. The one-shots
+    // double as the differential oracle.
+    let expected_census = census(&gram, BUDGET).unwrap();
+    let _ = scratch.census(&gram, BUDGET).unwrap();
+    let census_allocations = allocations_during(|| {
+        assert_eq!(scratch.census(&gram, BUDGET).unwrap(), expected_census);
+    });
+    assert_eq!(
+        census_allocations, 0,
+        "warm prepared census allocated {census_allocations} times"
+    );
+
+    let expected_nodes = for_each_short(&gram, 4, BUDGET, |_, _| {}).unwrap();
+    let _ = scratch.for_each(&gram, 4, BUDGET, |_, _| {}).unwrap();
+    let for_each_allocations = allocations_during(|| {
+        assert_eq!(
+            scratch.for_each(&gram, 4, BUDGET, |_, _| {}).unwrap(),
+            expected_nodes
+        );
+    });
+    assert_eq!(
+        for_each_allocations, 0,
+        "warm prepared enumeration allocated {for_each_allocations} times"
+    );
+}
+
+#[test]
+#[cfg(feature = "internals")]
+fn prepared_relevant_vectors_reuse_buffers() {
+    use lattica::named::d_n;
+    use lattica::relevant::{RelevantScratch, relevant_vectors};
+
+    const BUDGET: u64 = 1 << 20;
+    let gram = d_n::<i64>(4).unwrap();
+    let mut scratch = RelevantScratch::<i64>::new(4).unwrap();
+
+    // The one-shot result is the oracle; two warm steady-state calls must
+    // agree with it and with each other while allocating strictly less
+    // than the one-shot, which rebuilds every buffer per call.
+    let expected = relevant_vectors(&gram, BUDGET).unwrap();
+    drop(scratch.relevant_vectors(&gram, BUDGET).unwrap());
+    let first = allocations_during(|| {
+        assert_eq!(scratch.relevant_vectors(&gram, BUDGET).unwrap(), expected);
+    });
+    let second = allocations_during(|| {
+        assert_eq!(scratch.relevant_vectors(&gram, BUDGET).unwrap(), expected);
+    });
+    assert_eq!(
+        first, second,
+        "steady-state relevant calls allocated {first} then {second} times"
+    );
+    let one_shot = allocations_during(|| {
+        drop(relevant_vectors(&gram, BUDGET).unwrap());
+    });
+    assert!(
+        first < one_shot,
+        "prepared relevant allocated {first} times against one-shot {one_shot}"
+    );
+}

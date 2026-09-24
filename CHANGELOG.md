@@ -8,6 +8,17 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Added
+- `shortvec::EnumerationScratch` and `relevant::RelevantScratch` behind
+  `internals`: reusable enumeration buffers for one dimension, with
+  `for_each`/`census` and `relevant_vectors` methods identical to the
+  one-shots on their inputs. Steady-state enumeration calls allocate
+  nothing; relevant-vector calls allocate strictly less than the one-shot,
+  both covered by counting-allocator tests; a dimension mismatch is a
+  `Shape` error.
+- `int::AdjugatePath`: the public adjugate's elimination path, reported by
+  the `internals`-only `int::adjugate_profiled` so benchmarks can tell the
+  fraction-free elimination from the cofactor fallback. The public
+  `adjugate` is unchanged.
 
 - `int::hnf_form`: the row Hermite form and rank without the unimodular
   transform, sharing `hnf`'s exact elimination sequence. The construction
