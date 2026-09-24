@@ -168,9 +168,9 @@ fn dispatch_aos_24(
 /// accumulates rows in scalar order. The result is therefore bit-identical to
 /// the portable reference across lane boundaries and ragged tails.
 ///
-/// On x86 v3 hardware two shapes dispatch: sixteen outputs at sixty-four
-/// vectors or more, and the exact twenty-four-by-twenty-four geometry at any
-/// batch size. Everything else uses the portable kernel.
+/// On x86 v3 hardware two shapes dispatch: sixteen columns at any batch size
+/// through the fixed block-8 kernel, and the exact twenty-four-by-twenty-four
+/// geometry at any batch size. Everything else uses the portable kernel.
 ///
 /// # Errors
 ///
@@ -219,11 +219,10 @@ pub fn transform_batch_soa(
         // only materializes archmage's safe capability token for the tier
         // already selected; it never chooses or upgrades a backend.
         let token = archmage::X64V3Token::summon();
-        if vectors >= 64
-            && cols == 16
+        if cols == 16
             && let Some(token) = token
         {
-            x86::transform_batch_soa_avx2(token, matrix, cols, vectors, inputs, outputs);
+            x86::transform_batch_soa_fixed_16_block8(token, matrix, rows, vectors, inputs, outputs);
             return Ok(());
         }
         if rows == 24
@@ -538,6 +537,63 @@ mod tests {
                     .all(|(g, w)| g.total_cmp(w) == Ordering::Equal),
                 "block12 with NaN inputs"
             );
+        }
+    }
+
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    mod fixed_16 {
+        use super::super::portable::transform_batch_soa_scalar;
+        use super::super::transform_batch_soa;
+        use super::super::x86::transform_batch_soa_fixed_16_block8;
+        use archmage::{SimdToken, X64V3Token};
+
+        fn matrix(rows: usize) -> Vec<f64> {
+            (0..rows * 16)
+                .map(|i| (f64::from(i as u32) - 127.0) / 64.0)
+                .collect()
+        }
+
+        fn inputs(rows: usize, vectors: usize) -> Vec<f64> {
+            (0..rows * vectors)
+                .map(|i| (f64::from(i as u32 % 251) - 125.0) / 16.0)
+                .collect()
+        }
+
+        #[test]
+        fn fixed_16_is_bit_identical_across_lane_boundaries() {
+            let Some(token) = X64V3Token::summon() else {
+                return;
+            };
+            for rows in [1usize, 15, 16, 23, 24] {
+                for vectors in (0..=17).chain([31, 63, 64, 65, 127, 128, 129, 257]) {
+                    let matrix = matrix(rows);
+                    let inputs = inputs(rows, vectors);
+                    let mut want = vec![0.0; 16 * vectors];
+                    transform_batch_soa_scalar(&matrix, 16, vectors, &inputs, &mut want);
+                    let mut got = vec![0.0; 16 * vectors];
+                    transform_batch_soa_fixed_16_block8(
+                        token, &matrix, rows, vectors, &inputs, &mut got,
+                    );
+                    assert_eq!(got, want, "{rows} rows, {vectors} vectors");
+                }
+            }
+        }
+
+        /// Sixteen columns dispatch at every batch size, including below the
+        /// old sixty-four-vector gate.
+        #[test]
+        fn sixteen_columns_dispatch_without_a_batch_threshold() {
+            for rows in [1usize, 16, 24] {
+                for vectors in [1usize, 4, 8, 63, 64, 65] {
+                    let matrix = matrix(rows);
+                    let inputs = inputs(rows, vectors);
+                    let mut want = vec![0.0; 16 * vectors];
+                    transform_batch_soa_scalar(&matrix, 16, vectors, &inputs, &mut want);
+                    let mut got = vec![0.0; 16 * vectors];
+                    transform_batch_soa(&matrix, rows, 16, vectors, &inputs, &mut got).unwrap();
+                    assert_eq!(got, want, "{rows} rows, {vectors} vectors");
+                }
+            }
         }
     }
 }

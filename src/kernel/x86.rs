@@ -118,3 +118,75 @@ macro_rules! fixed_24_kernel {
 fixed_24_kernel!(transform_batch_soa_fixed_24_block6, 6);
 fixed_24_kernel!(transform_batch_soa_fixed_24_block8, 8);
 fixed_24_kernel!(transform_batch_soa_fixed_24_block12, 12);
+
+/// Fixed 16-column geometry with register-carried output accumulators.
+///
+/// The same exactness argument as the 24-column family above: output columns
+/// advance in blocks of `BLOCK`, every loaded input chunk feeds `BLOCK`
+/// output planes, and each accumulator lives entirely in registers. Every
+/// lane still accumulates rows in ascending order with separate multiply and
+/// add, which is the exact scalar operation sequence; the ragged tail reuses
+/// the scalar expression order directly. Rows stream, so any row count
+/// dispatches; only the sixteen columns are fixed.
+macro_rules! fixed_16_kernel {
+    ($name:ident, $block:expr) => {
+        /// Fixed-geometry 16-column `SoA` kernel; see the family comment
+        /// above for the exactness argument.
+        #[allow(clippy::used_underscore_binding)]
+        #[arcane(import_intrinsics)]
+        pub fn $name(
+            _token: X64V3Token,
+            matrix: &[f64],
+            rows: usize,
+            vectors: usize,
+            inputs: &[f64],
+            outputs: &mut [f64],
+        ) {
+            const COLS: usize = 16;
+            const BLOCK: usize = $block;
+            debug_assert_eq!(matrix.len(), rows * COLS);
+            if vectors == 0 {
+                return;
+            }
+            let vector_end = vectors / 4 * 4;
+            let mut block = 0;
+            while block < COLS {
+                for offset in (0..vector_end).step_by(4) {
+                    let mut acc = [_mm256_setzero_pd(); BLOCK];
+                    for row in 0..rows {
+                        let values: &[f64; 4] =
+                            inputs[row * vectors + offset..][..4].try_into().unwrap();
+                        let loaded = _mm256_loadu_pd(values);
+                        let coefficients = &matrix[row * COLS + block..][..BLOCK];
+                        for (slot, coefficient) in acc.iter_mut().zip(coefficients) {
+                            let scaled = _mm256_broadcast_sd(coefficient);
+                            *slot = _mm256_add_pd(*slot, _mm256_mul_pd(scaled, loaded));
+                        }
+                    }
+                    for (plane, value) in acc.iter().enumerate() {
+                        let destination: &mut [f64; 4] = (&mut outputs
+                            [(block + plane) * vectors + offset..][..4])
+                            .try_into()
+                            .unwrap();
+                        _mm256_storeu_pd(destination, *value);
+                    }
+                }
+                block += BLOCK;
+            }
+            for column in 0..COLS {
+                let out = &mut outputs[column * vectors..(column + 1) * vectors];
+                for lane in vector_end..vectors {
+                    let mut sum = 0.0;
+                    for row in 0..rows {
+                        sum += matrix[row * COLS + column] * inputs[row * vectors + lane];
+                    }
+                    out[lane] = sum;
+                }
+            }
+        }
+    };
+}
+
+// The dispatched 16-column kernel is block 8: two blocks of accumulators,
+// register-carried across all rows.
+fixed_16_kernel!(transform_batch_soa_fixed_16_block8, 8);
