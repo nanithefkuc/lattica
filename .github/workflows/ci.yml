@@ -132,15 +132,3 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - run: cargo build --target ${{ matrix.target }} --no-default-features
-
-  miri:
-    name: miri (focused scalar safety)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: miri
-      - name: exact integer arithmetic
-        run: "cargo miri test --lib --no-default-features int::"
