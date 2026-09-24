@@ -11,8 +11,35 @@ exactly; never construct the combinatorial object that defines it.** Deciding
 lattice points from real targets — quantization, enumeration, ML decoding,
 `mod Λ` — is `lattice-engine`'s, one layer up; nothing here selects a point.
 
-Not a codec. Not a field library — that is `fff`/`fgf`. Not a graph library —
+Not a codec. Not a field library — that is `fgf`. Not a graph library —
 that is `sgraph`. Not lattice cryptography, ever.
+
+## Tooling
+
+`just validate` is the pull-request gate; the shared recipe surface is
+documented once in the umbrella's root `AGENTS.md`. Crate specifics:
+
+- **`TIERS = v3 scalar`.** The only dispatched code here is the real-vector
+  batch transforms, which implement the AVX2-class tier and the portable
+  fallback — there are no binary-field kernels, so no GFNI or crypto tier
+  exists to sweep. `just test-tiers` and `just cover` re-run pinned to both,
+  and the scalar run is what proves hard rule 5's bit-identity claim.
+- **`MIRI` is empty.** The library forbids unsafe. The exact integer path
+  remains ordinary host coverage rather than owned-unsafe Miri coverage.
+- **`COV_IGNORE` is empty**: every line counts toward the 95% gate.
+- **Bench targets:** `kernel` and `optimization` — e.g. `just bench-save
+  kernel`, then `just bench kernel`. Both need `internals`, which the bench
+  recipes supply via `--all-features`.
+- **Competitor harnesses** live in `external/`, one separate unpublished
+  package per harness outside `src/` and `benches/`; the crate's package
+  exclusion keeps them out of `cargo package`. `external/bench-fplll/` holds
+  the Rust CSV binary (run with `just bench-fplll`) beside its matched C++
+  source, built and run manually per `BENCHMARKS.md` at the pinned fplll
+  version. `external/bench-flint/` holds the FLINT Gram-LLL C++ source, which
+  verifies the reduction certificate before timing.
+- `justfile` is a byte-identical vendored copy — never edit it here, or the
+  umbrella's `just drift` check fails. Crate-specific values and recipes go in
+  `crate.just`.
 
 ## Hard rules
 
