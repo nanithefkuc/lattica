@@ -13,7 +13,7 @@ listed below.
 
 | Setting | Value |
 | --- | --- |
-| Source | Same `lattica` tree on both hosts, `87897cc` |
+| Source | Same `lattica` tree on both hosts, `2b2cd01` |
 | SIMD dependency | `simdispatch` resolved to the local working copy through the umbrella patch table; revision not recorded |
 | Kernel builds | `--features internals`; portable comparison adds `--no-default-features` |
 | Native compiler | GCC 16.2.1 on both hosts |
@@ -33,8 +33,11 @@ batches and coordinate planes for structure-of-arrays (SoA) batches.
 | Vectors | Scalar (µs) | Dispatched (µs) |
 | ---: | ---: | ---: |
 | 8 | 0.442/0.495 | 0.450/0.506 |
+| 8 (block-8) | 0.437/0.495 | 0.092/0.095 |
 | 64 | 1.941/1.943 | 1.604/1.349 |
+| 64 (block-8) | 2.299/1.949 | 0.722/0.723 |
 | 257 | 8.892/8.058 | 6.747/5.835 |
+| 257 (block-8) | 9.455/8.044 | 3.229/3.056 |
 
 ### Twenty-four-output structure-of-arrays dispatch
 
@@ -78,7 +81,7 @@ Square `transform`, Criterion middle estimates.
 
 | Public entry | Geometry | Dispatched when |
 | --- | --- | --- |
-| `transform_batch_soa` | 16 outputs, any row count | At least 64 vectors |
+| `transform_batch_soa` | 16 outputs, any row count | Every batch size |
 | `transform_batch_soa` | Exact 24-by-24 geometry | Every batch size |
 | `transform_batch` | Exact 24-by-24 array-of-structures geometry | At least 4 vectors |
 
