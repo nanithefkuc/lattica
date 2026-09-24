@@ -68,13 +68,15 @@ pub struct Census<T: Int> {
 /// norm.
 ///
 /// The enumeration is complete: no vector within the radius is skipped.
-///
 /// # Errors
 /// - [`EnumerationError::NotALattice`] if `G` is not positive definite, which
 ///   means it does not describe a lattice.
 /// - [`EnumerationError::InvalidRadius`] if `radius_sq` is negative.
 /// - [`EnumerationError::EnumerationBudget`] if the node budget is exhausted.
 /// - [`EnumerationError::Range`] if an intermediate exceeds `i128`.
+///
+/// Enumeration is not atomic: `visit` may already have run when a budget or
+/// range error returns. Only a success return proves the count complete.
 ///
 /// # Examples
 ///
@@ -163,13 +165,14 @@ where
     O: EnumerationObserver,
 {
     let n = gram.dim();
-    if n == 0 {
-        return Ok(0);
-    }
     if radius_sq < 0 {
         // A negative squared radius is caller error. Answering it with an
-        // empty enumeration would present nonsense as a proved fact.
+        // empty enumeration would present nonsense as a proved fact, even
+        // for the empty lattice.
         return Err(EnumerationError::InvalidRadius { radius_sq });
+    }
+    if n == 0 {
+        return Ok(0);
     }
     let mut buffers = Buffers::new(n);
     enumerate_with(&mut buffers, gram, radius_sq, budget, visit, observer)
@@ -683,11 +686,11 @@ pub(crate) mod unstable {
                 }
                 .into());
             }
-            if gram.dim() == 0 {
-                return Ok(0);
-            }
             if radius_sq < 0 {
                 return Err(EnumerationError::InvalidRadius { radius_sq });
+            }
+            if gram.dim() == 0 {
+                return Ok(0);
             }
             enumerate_with(
                 &mut self.buffers,
@@ -836,6 +839,15 @@ mod tests {
         let g = Gram::<i64>::from_rows(2, &[2, -1, -1, 2]).unwrap();
         assert_eq!(
             for_each_short(&g, -1, DEFAULT_NODE_BUDGET, |_, _| {}),
+            Err(EnumerationError::InvalidRadius { radius_sq: -1 })
+        );
+    }
+
+    #[test]
+    fn a_negative_radius_is_an_error_on_the_empty_lattice() {
+        let empty = Gram::<i64>::from_rows(0, &[]).unwrap();
+        assert_eq!(
+            for_each_short(&empty, -1, DEFAULT_NODE_BUDGET, |_, _| {}),
             Err(EnumerationError::InvalidRadius { radius_sq: -1 })
         );
     }

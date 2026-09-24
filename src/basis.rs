@@ -201,6 +201,53 @@ impl<T: Int> Gram<T> {
         self.inner(c, c)
     }
 
+    /// The squared norm `c G cᵀ` accumulated in `i128`, for probes whose
+    /// entries fit `T` but whose norm may not.
+    ///
+    /// # Errors
+    ///
+    /// [`RangeError::Shape`] if `c` has the wrong length, and
+    /// [`RangeError::Overflow`] if the norm exceeds `i128`.
+    pub fn norm_sq_wide(&self, c: &[T]) -> Result<i128, RangeError> {
+        use crate::error::Op;
+        let n = self.dim();
+        if c.len() != n {
+            return Err(RangeError::Shape {
+                expected: n,
+                found: c.len(),
+            });
+        }
+        let mut total = 0i128;
+        for (i, &ci) in c.iter().enumerate() {
+            if ci.is_zero() {
+                continue;
+            }
+            let mut row = 0i128;
+            for (j, &cj) in c.iter().enumerate() {
+                if cj.is_zero() {
+                    continue;
+                }
+                let term = ci
+                    .widen()
+                    .checked_mul(self.entry(i, j).widen())
+                    .and_then(|t| t.checked_mul(cj.widen()))
+                    .ok_or(RangeError::Overflow {
+                        op: Op::Mul,
+                        width_bits: 128,
+                    })?;
+                row = row.checked_add(term).ok_or(RangeError::Overflow {
+                    op: Op::Add,
+                    width_bits: 128,
+                })?;
+            }
+            total = total.checked_add(row).ok_or(RangeError::Overflow {
+                op: Op::Add,
+                width_bits: 128,
+            })?;
+        }
+        Ok(total)
+    }
+
     /// The inner product `a G bᵀ`.
     ///
     /// # Errors

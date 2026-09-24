@@ -114,24 +114,26 @@ impl Zq {
 
     /// The centered representative of a residue, in `[-q/2, q/2)`.
     ///
-    /// # Panics
-    ///
-    /// Debug builds assert that `r` is already reduced.
+    /// The input need not be reduced: a value at or above `q` is reduced
+    /// first, so every `u32` lands in its own residue class.
     // Casts: the result lies in `[-q/2, q/2)` with `q <= u32::MAX`, so its
     // magnitude is at most `2^31`, which `i32` represents.
     #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
     #[must_use]
     pub const fn center(&self, r: u32) -> i32 {
-        debug_assert!(r < self.q, "residue is not reduced");
+        // The fast path keeps the common reduced case branch-free of
+        // division; only unreduced input pays for `reduce_u64`.
+        let r = if r < self.q {
+            r
+        } else {
+            self.reduce_u64(r as u64)
+        };
         if r < self.threshold {
             r as i32
         } else {
             (r as i64 - self.q as i64) as i32
         }
     }
-
-    /// Lifts a residue to the integer of least magnitude in its class.
-    ///
     /// Identical to [`center`](Zq::center); the two names exist because the
     /// operations mean different things at the call site. `center` normalizes a
     /// residue, while `lift` crosses from `Z_q` into `Z` on the Construction A
@@ -174,11 +176,12 @@ impl Zq {
 
 /// Unstable residue-composition operations for [`Zq`].
 ///
+/// Operands must be reduced residues: an unreduced operand wraps in release
+/// builds, guarded only by debug assertions.
+///
 /// No lattice path composes residues; general modular arithmetic is a
 /// different mathematical object from a lattice. Reachable externally only
 /// through the `internals` facade; not a compatibility promise.
-// Unstable items are reachable only through the `internals` facade, so the
-// library target without that feature reports them as unused.
 #[allow(dead_code)]
 pub(crate) mod composition {
     use super::Zq;
@@ -299,6 +302,26 @@ mod tests {
                 assert!((lo..hi).contains(&c), "center({x}) = {c} for q = {q}");
                 // The defining property: it is the same class.
                 assert_eq!(r.reduce_i64(c), x);
+            }
+        }
+    }
+
+    #[test]
+    fn center_reduces_unreduced_input_into_its_class() {
+        let r = zq(7);
+        // Pre-fix this wrapped to `-8`, which is a different class mod 7.
+        assert_eq!(r.center(u32::MAX), 3);
+        assert_eq!(r.center(8), 1);
+        assert_eq!(r.center(19), -2);
+        for q in [2u32, 3, 7, 255, 65_521] {
+            let r = zq(q);
+            for x in [q, q + 1, 2 * q + 1, u32::MAX - 1, u32::MAX] {
+                let c = i64::from(r.center(x));
+                assert_eq!(
+                    c.rem_euclid(i64::from(q)),
+                    i64::from(x % q),
+                    "q = {q}, x = {x}"
+                );
             }
         }
     }

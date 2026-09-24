@@ -170,7 +170,12 @@ fn adjugate_observed<T: Int>(a: &IntMatrix<T>) -> Result<(IntMatrix<T>, Adjugate
     }
     match fraction_free_adjugate(a) {
         Ok(Some(out)) => Ok((out, AdjugatePath::FractionFree)),
-        Ok(None) | Err(_) => Ok((adjugate_cofactors(a)?, AdjugatePath::Cofactors)),
+        // Only a width overflow falls back to cofactors. `InexactDivision`
+        // documents a broken Bareiss invariant, so it propagates as a bug.
+        Ok(None) | Err(RangeError::Overflow { .. }) => {
+            Ok((adjugate_cofactors(a)?, AdjugatePath::Cofactors))
+        }
+        Err(other) => Err(other),
     }
 }
 

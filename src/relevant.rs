@@ -17,17 +17,15 @@ use crate::shortvec::for_each_short;
 /// dimensional oracle and facet work, not for high-dimensional decoding.
 pub const MAX_RELEVANT_DIM: usize = 16;
 
-/// Flat per-coset minima: one best norm, an arrival count capped past two,
+/// Flat per-coset minima: one best norm, an arrival count capped at three,
 /// and up to two coordinate blocks for the opposite-pair check.
 ///
 /// A coset is Voronoi-relevant exactly when its minimum is attained by
 /// precisely two vectors and they are negatives. Ties beyond two prove the
-/// coset irrelevant, so nothing past the second block is ever stored.
-///
-/// That capping relies on the walk's emission order: vectors arrive in
-/// ascending lexicographic order over `(c_{n-1}, …, c_0)`, and negation
-/// reverses it, so with four or more minima the first two arrivals are
-/// never opposite. A walk that reorders emissions must revisit this.
+/// coset irrelevant, so nothing past the second block is ever stored, while
+/// the count still records the third arrival. Four or more minima therefore
+/// report `3` however the walk orders arrivals, and the relevance decision
+/// never depends on emission order.
 struct CosetMinima {
     n: usize,
     cosets: usize,
@@ -98,12 +96,16 @@ impl CosetMinima {
             }
             Some(current) if norm_sq == current => {
                 sink.tie();
+                // Count past two so a coset with four or more minima reports
+                // `3` however the walk orders arrivals; only the first two
+                // blocks are stored. `materialize_relevant` still selects on
+                // `== 2`, so the result no longer depends on emission order.
                 let count = self.counts[mask];
                 if count < 2 {
                     let slot = usize::try_from(count).unwrap_or(2);
                     self.block_mut(mask, slot).copy_from_slice(coordinates);
-                    self.counts[mask] = count + 1;
                 }
+                self.counts[mask] = count.saturating_add(1).min(3);
             }
             Some(_) => {}
         }
@@ -562,7 +564,7 @@ fn radius_for_parity_ball_into<T: Int>(
                 T::ONE
             };
         }
-        radius_sq = radius_sq.max(gram.norm_sq(representative)?.widen());
+        radius_sq = radius_sq.max(gram.norm_sq_wide(representative)?);
     }
     Ok((coset_count, radius_sq))
 }
@@ -659,6 +661,35 @@ mod tests {
         let (v, stats) = relevant_vectors_profiled(&empty, 1 << 8).unwrap();
         assert!(v.is_empty());
         assert_eq!(stats.masks, 0);
+    }
+
+    /// Four minima in one coset stay irrelevant however they arrive: the
+    /// opposite-first order used to fill both blocks and report relevant.
+    #[test]
+    fn four_minima_stay_irrelevant_in_any_arrival_order() {
+        use super::{CosetMinima, NoSink, materialize_relevant, parity_mask};
+        let (a, b) = ([1i128, 1], [1i128, -1]);
+        let (neg_a, neg_b) = ([-1i128, -1], [-1i128, 1]);
+        assert_eq!(parity_mask(&a), parity_mask(&b));
+        for order in [
+            [a, neg_a, b, neg_b],
+            [neg_b, b, neg_a, a],
+            [a, b, neg_a, neg_b],
+        ] {
+            let mut minima = CosetMinima::new(4, 2);
+            let mut sink = NoSink;
+            for v in order {
+                minima.offer(parity_mask(&v), &v, 2, &mut sink);
+            }
+            let out = materialize_relevant(&minima);
+            assert!(!out.contains(&a.to_vec()), "order {order:?}");
+        }
+        let mut minima = CosetMinima::new(4, 2);
+        let mut sink = NoSink;
+        minima.offer(parity_mask(&a), &a, 2, &mut sink);
+        minima.offer(parity_mask(&neg_a), &neg_a, 2, &mut sink);
+        let out = materialize_relevant(&minima);
+        assert_eq!(out, vec![neg_a.to_vec(), a.to_vec()]);
     }
 
     /// The profiled path returns the same vectors as the public one, with

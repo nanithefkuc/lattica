@@ -274,6 +274,8 @@ fn backend() -> Backend {
 ///
 /// The single-vector and batch kernels here are the bit-identity oracles:
 /// every dispatched path performs the same operations in the same order.
+/// Identity holds bit-for-bit on non-NaN results; NaN payloads are
+/// unspecified by Rust/LLVM when both operands are NaN.
 /// Reachable externally only through the `internals` facade.
 pub(crate) mod portable {
     /// Portable scalar reference for [`super::transform`].
@@ -480,7 +482,12 @@ mod tests {
 
         #[test]
         fn fixed_kernels_are_bit_identical_across_lane_boundaries() {
-            let token = X64V3Token::summon().expect("this host dispatches x86 v3");
+            // The kernels need v3 codegen; a host without it (or a forced
+            // scalar tier) exercises the portable path instead, which the
+            // routing tests cover.
+            let Some(token) = X64V3Token::summon() else {
+                return;
+            };
             for vectors in (1..=17).chain([31, 63, 64, 65, 127, 128, 129, 257]) {
                 let matrix = matrix();
                 let inputs = inputs(vectors);
@@ -496,6 +503,41 @@ mod tests {
                 transform_batch_soa_fixed_24_block8(token, &matrix, vectors, &inputs, &mut got);
                 assert_eq!(got, want, "block8, {vectors} vectors");
             }
+        }
+
+        /// NaN payloads are unspecified by Rust/LLVM, so the bit-identity
+        /// claim covers only non-NaN results; this compares NaN inputs after
+        /// canonicalizing every NaN, proving the paths agree elsewhere.
+        #[test]
+        fn fixed_kernels_agree_on_nan_inputs_up_to_payload() {
+            use core::cmp::Ordering;
+            let Some(token) = X64V3Token::summon() else {
+                return;
+            };
+            let canonicalize = |values: &mut [f64]| {
+                for value in values.iter_mut() {
+                    if value.is_nan() {
+                        *value = f64::NAN;
+                    }
+                }
+            };
+            let matrix = matrix();
+            let mut inputs = inputs(65);
+            inputs[0] = f64::NAN;
+            inputs[64] = -f64::NAN;
+            inputs[24 * 64 + 23] = f64::NAN;
+            let mut want = vec![0.0; 24 * 65];
+            transform_batch_soa_scalar(&matrix, 24, 65, &inputs, &mut want);
+            let mut got = vec![0.0; 24 * 65];
+            transform_batch_soa_fixed_24_block12(token, &matrix, 65, &inputs, &mut got);
+            canonicalize(&mut want);
+            canonicalize(&mut got);
+            assert!(
+                got.iter()
+                    .zip(want.iter())
+                    .all(|(g, w)| g.total_cmp(w) == Ordering::Equal),
+                "block12 with NaN inputs"
+            );
         }
     }
 }

@@ -122,9 +122,10 @@ impl<T: Int> Reduced<T> {
 ///
 /// # Errors
 ///
-/// [`ReduceError::NotFullRank`] if the input is not positive definite, and
-/// [`ReduceError::Range`] if an intermediate exceeds the element width. The
-/// input is never modified.
+/// [`ReduceError::NotFullRank`] if the input is not positive definite,
+/// [`ReduceError::Range`] if an intermediate exceeds the element width, and
+/// [`ReduceError::BudgetExhausted`] if the step budget runs out. The input is
+/// never modified.
 ///
 /// # Examples
 ///
