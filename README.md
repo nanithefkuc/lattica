@@ -1,97 +1,152 @@
 > [!WARNING]
-> This library was made with the help of AI. While the library has tests
-> to check for regressions, things can break. Audit the code yourself, or with
+> This library was made with the help of AI. Audit the code yourself, or with
 > your own agent before using.
+
+> [!WARNING]
+> `lattica` makes no constant-time guarantee. Handling of secrets in 
+> lattice-based cryptography requires a separate audit and is not supported by 
+> `lattica` natively.
 
 # lattica
 
-`lattica` is the shared arithmetic layer for point lattices in `Z^n` and
-`R^n`, underneath lattice-based erasure and error-correcting codes. It is
-deliberately not a codec, not a field library, and not a cryptographic lattice
-library.
+`lattica` provides arithmetic for point lattices in `Z^n` and `R^n`. It supports
+exact integer linear algebra, basis reduction, nested cosets, structural
+enumeration, and real-vector transforms underneath lattice-based coding.
 
-Deciding lattice points from real targets — quantization, sphere enumeration,
-maximum-likelihood decoding, `mod Λ` — lives one layer up in
-[`lattice-engine`](https://github.com/nanithefkuc/lattice-engine). This crate
-computes *facts* about a lattice; it never selects a point.
+| Main property | What it provides |
+| --- | --- |
+| Exact arithmetic | Fixed-width integers with checked overflow, Hermite and Smith normal forms, determinants, and unimodular transforms. |
+| Gram-based representation | Integer coordinates and exact metric queries, including lattices without an integral ambient basis. |
+| Basis reduction | Fraction-free Gram–Schmidt, Lagrange–Gauss, LLL, and deep-insertion LLL with an exact rational parameter. |
+| Lattice constructions | Named lattices, nested pairs, and Construction A/D over caller-supplied generators. |
+| Structural enumeration | Short vectors, shell counts, minimal norms, and low-dimensional Voronoi-relevant vectors. |
+| Real-vector batches | Runtime-dispatched transforms with bit-identical portable results and allocation-free execution. |
 
-It provides:
+`lattica` computes facts about a lattice; it does not select the nearest point
+to a real target. Quantization, target-centered decoding, code and graph
+generation, and lattice cryptography are outside its scope. It is not a codec
+or a finite-field library.
 
-- The classical named lattices as first-class constructions — `Z^n`, `A_n`,
-  `D_n`, `E_8`, `BW_16`, and `Λ_24` — plus nested pairs `Λ_s ⊆ Λ_c` with
-  coset enumeration, and the code-free Construction A / Construction D
-  generator constructions over caller-supplied generator matrices.
-- Exact integer and modular substrate: fixed-width integer linear algebra
-  (Hermite and Smith normal forms, integer determinant, unimodular
-  transforms) and `Z_q` ring arithmetic with centered representatives and lift
-  `Z_q → Z`.
-- Offline reduction and orthogonalization: fraction-free Gram–Schmidt (GSO
-  coefficients and `‖b_i*‖²` retained), Lagrange–Gauss, LLL and deep-insertion
-  LLL with an exact rational `δ`, and size reduction.
-- Structural enumeration: exact short-vector enumeration that *recovers* the
-  classical determinants, minimal norms, kissing numbers, and theta series,
-  and exact Voronoi-relevant vectors in low dimension.
-- Dispatched real-vector batch transforms over `lattica`-owned layouts.
+## Installation
 
-Design is split along an exactness seam. Every operation on an integral
-lattice — membership, coset extraction, HNF, SNF, `det`, LLL, generator
-constructions — is exact integer arithmetic with checked overflow at the
-boundaries; `f64` appears only in the real-vector kernels (where dispatched
-results are bit-identical to the scalar reference, with no FMA or
-reassociation) and in published real generators such as `e8_generator`.
-`#![forbid(unsafe_code)]` at the root.
-
-## Implementation status
-
-Working end to end for the lattices it names; the decode side of the stack is
-`lattice-engine`'s.
-
-- **Implemented:** exact fixed-width integer arithmetic; Hermite and Smith
-  normal forms; the `Z_q` ring; `Gram`/`Basis` representation; the named
-  lattices `Z^n`/`A_n`/`D_n`/`E_8`/`BW_16`/`Λ_24` with public generator
-  numerators; exact short-vector enumeration; exact low-dimensional
-  Voronoi-relevant vectors; nested pairs with coset enumeration;
-  Construction A/D generator constructions; fraction-free Gram–Schmidt; LLL
-  and deep-insertion LLL with an exact rational `δ`; Lagrange–Gauss; and a
-  runtime-dispatched real-vector batch kernel.
-
-## Usage
-
-The MSRV is Rust 1.89.
-
-`lattica` is distributed through git only; it is not published to
-[crates.io](https://crates.io).
+The minimum supported Rust version is 1.89, edition 2024. Add as a cargo
+dependency:
 
 ```toml
 [dependencies]
-lattica = { git = "https://github.com/nanithefkuc/lattica" }
+lattica = { version = "1.0.0" }
 ```
 
-### Features
+Set `default-features = false` to use portable kernels without the SIMD
+dependencies. The crate requires `std` in every feature configuration.
 
-| Feature | Result |
+## Quick start
+
+Construct the integral Gram matrix of E8 and recover its minimal vectors by
+exact enumeration:
+
+```rust
+use lattica::named::e8;
+use lattica::shortvec::{DEFAULT_NODE_BUDGET, census};
+
+let gram = e8::<i64>().unwrap();
+let result = census(&gram, DEFAULT_NODE_BUDGET).unwrap();
+
+assert_eq!(gram.det().unwrap(), 1);
+assert_eq!(result.min_norm_sq, Some(2));
+assert_eq!(result.kissing_number, 240);
+```
+
+The determinant, minimal norm, and kissing number are computed from the
+construction rather than stored answers. Enumeration takes an explicit node
+budget and reports exhaustion instead of treating a partial search as complete.
+
+## Exact lattice operations
+
+| Surface | Contract |
 | --- | --- |
-| default (`simd`) | `simdispatch`-selected AVX2 for measured 16-output structure-of-arrays batches; portable scalar fallback everywhere else |
-| `internals` | unstable scalar references and implementation APIs, exempt from compatibility guarantees |
+| `Int`, `int::IntMatrix` | Checked integer arithmetic and matrix operations, including HNF, SNF, and determinant. |
+| `Gram`, `Basis` | Gram matrices and integral generator bases, with rank and metric queries. |
+| `gso`, `reduce` | Fraction-free orthogonalization and exact basis reduction. |
+| `named` | `Z^n`, `A_n`, `D_n`, `E_8`, `BW_16`, and `Λ_24`, including published generator numerators. |
+| `Nested` | Inclusion checks, quotient index, and coset representatives for nested lattice pairs. |
+| `construct` | Construction A/D generators from supplied code-generator matrices. |
+| `Zq` | Modular reduction, centered representatives, and lifting residues to integers. |
+| `shortvec`, `relevant` | Exact structural enumeration with explicit work budgets. |
+
+A lattice vector is an integer coordinate vector. Its squared norm is
+`c G cᵀ`, where `G` is the Gram matrix; ambient coordinates need not be
+integral. Reduction uses an exact rational `Delta`, not a floating-point
+approximation. A reduced basis is not unique: its unimodular transform and
+reduced-basis predicate provide the certificate.
+
+Integer operations return a range error when the chosen width cannot hold an
+intermediate result. There is no wrapping, arbitrary-precision fallback, or
+floating-point approximation of an integral answer. Shape and range errors
+leave mutable outputs unchanged.
+
+## Real-vector transforms
+
+`kernel::transform` applies one dense transform. `transform_batch` accepts
+strided vectors; `transform_batch_soa` accepts coordinate planes. All write
+caller-owned output buffers and validate geometry before writing.
+
+```rust
+use lattica::kernel::transform;
+
+// Each input coordinate contributes one contiguous row of output coefficients.
+let matrix = [1.0, 2.0, 3.0, 4.0];
+let input = [5.0, 6.0];
+let mut output = [0.0; 2];
+
+transform(&matrix, 2, 2, &input, &mut output).unwrap();
+assert_eq!(output, [23.0, 34.0]);
+```
+
+The dispatched kernels accumulate input rows in scalar order with separate
+multiplication and addition. No FMA or reassociation is used, so SIMD results
+are bit-identical to the portable reference. Buffer layouts and scratch
+requirements belong to each operation's API documentation.
+
+## Features and backends
+
+| Feature | Effect |
+| --- | --- |
+| default | enables `simd` |
+| `simd` | enables `simdispatch` selection and Archmage-backed x86-64 AVX2 kernels |
+| `internals` | re-export-only facade of portable references, profiling, workspace, and experimental APIs |
+
+Nothing behind `internals` is a compatibility promise; those APIs may change
+or disappear in any release. Disabling SIMD leaves the exact arithmetic and
+portable real-vector surface available, but does not enable `no_std`.
+
+[`simdispatch`](https://github.com/nanithefkuc/simdispatch) owns CPU detection
+and the process-startup, downgrade-only `SIMD_BACKEND` override. AVX2 dispatch
+is geometry-dependent; other targets and shapes use portable kernels. No
+architecture-specific compiler flags are required.
+
+The library forbids unsafe Rust. Safe memory access and exact arithmetic do
+not imply constant-time execution; lattice cryptography is not a supported use.
+
+## Performance
+
+[BENCHMARKS.md](BENCHMARKS.md) records public-operation measurements, dispatch
+geometry, and competitor comparisons, including their input contracts and
+reproduction details.
 
 ## Building
 
-`lattica` builds on stable Rust (edition 2024, MSRV 1.89) with no target-feature
-flags. The default `simd` feature resolves the stack-wide `SIMD_BACKEND` through
-`simdispatch`; disabling it removes runtime dispatch and `archmage`:
+From the repository, use `just` for build and verification commands:
 
 ```sh
-cargo build                     # default: simd
-cargo build --features internals
-cargo test
+just build       # release build with all features
+just features    # no-default, default, and all-feature tests
+just test
+just test-tiers   # requested backend sweep
+just doc
+just validate    # complete gate, including coverage
 ```
-
-Kernel crossovers and the reproducible fplll and FLINT comparisons are
-recorded in [`BENCHMARKS.md`](BENCHMARKS.md).
-
-`lattica` is **not** `no_std`: real-basis reduction needs `sqrt` and friends,
-and a `libm` dependency would cost more than `std` does.
 
 ## License
 
-MIT.
+MIT — see [LICENSE](LICENSE).
