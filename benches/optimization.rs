@@ -10,14 +10,18 @@ use std::time::{Duration, Instant};
 use lattica::Basis;
 use lattica::basis::Gram;
 use lattica::gso::Gso;
-use lattica::int::{Int, IntMatrix, adjugate, hnf, hnf_mod_det, invariant_factors};
+use lattica::int::{
+    AdjugatePath, Int, IntMatrix, adjugate, adjugate_profiled, hnf, hnf_mod_det, invariant_factors,
+};
 use lattica::named::{a_n, d_n, e8, zn};
 use lattica::reduce::{
     Delta, Reduced, ReductionStats, ReductionWorkspace, is_reduced, lll, lll_deep,
     lll_deep_profiled, lll_profiled,
 };
-use lattica::relevant::relevant_vectors_profiled;
-use lattica::shortvec::{DEFAULT_NODE_BUDGET, for_each_short, for_each_short_profiled};
+use lattica::relevant::{RelevantScratch, relevant_vectors_profiled};
+use lattica::shortvec::{
+    DEFAULT_NODE_BUDGET, EnumerationScratch, for_each_short, for_each_short_profiled,
+};
 
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
@@ -503,6 +507,87 @@ fn benchmark_algebra() {
     }
 }
 
+/// One adjugate corpus cell over caller-supplied matrices: prove
+/// `adj(A) · A == det(A) · I` on every input, record how many took the
+/// cofactor fallback, then time the public one-shot per matrix.
+///
+/// The inputs are the matrices consumers actually invert — LLL transforms
+/// and named Gram matrices — rather than the structural bidiagonal fixture
+/// below, whose pivot structure the fraction-free path may favor.
+fn run_adjugate_cell(
+    name: &str,
+    dimension: usize,
+    matrices: &[IntMatrix<i128>],
+    fingerprint: i128,
+) {
+    let mut cofactors = 0u64;
+    for matrix in matrices {
+        let (adj, path) = adjugate_profiled(matrix).unwrap();
+        let det = matrix.det().unwrap();
+        let product = adj.mul(matrix).unwrap();
+        for row in 0..dimension {
+            for column in 0..dimension {
+                let expected = if row == column { det } else { 0 };
+                assert_eq!(
+                    product.get(row, column),
+                    expected,
+                    "{name}: adjugate identity"
+                );
+            }
+        }
+        cofactors += u64::from(path == AdjugatePath::Cofactors);
+    }
+    let elapsed = measured(|| {
+        for matrix in matrices {
+            black_box(adjugate(black_box(matrix)).unwrap());
+        }
+    });
+    let count = f64::from(u32::try_from(matrices.len()).unwrap());
+    println!(
+        "algebra_adjugate_ns,{dimension},{name},{:.2},{fingerprint}",
+        elapsed.as_secs_f64() * 1e9 / count
+    );
+    println!("algebra_adjugate_cofactors,{dimension},{name},{cofactors},{fingerprint}");
+}
+
+fn benchmark_adjugate_consumers() {
+    for dimension in DIMENSIONS {
+        // Unimodular LLL transforms over the shear corpus: what the
+        // high-dimensional enumerator inverts after reducing.
+        let transforms: Vec<IntMatrix<i128>> = (0..16)
+            .map(|case| {
+                let rows = skew_basis(dimension, case, 4);
+                let gram = Basis::from_rows(dimension, dimension, &rows)
+                    .unwrap()
+                    .gram()
+                    .unwrap();
+                lll(&gram, Delta::STRONG).unwrap().transform
+            })
+            .collect();
+        let fingerprint: i128 = transforms
+            .iter()
+            .enumerate()
+            .map(|(index, matrix)| i128::try_from(index + 1).unwrap() * matrix.det().unwrap())
+            .sum();
+        run_adjugate_cell("lll_transform", dimension, &transforms, fingerprint);
+
+        // Named Gram matrices: what the Babai and high-dimensional paths
+        // invert at setup.
+        let named: Vec<IntMatrix<i128>> = [
+            a_n(dimension).unwrap().as_matrix().clone(),
+            d_n(dimension).unwrap().as_matrix().clone(),
+        ]
+        .into_iter()
+        .collect();
+        let fingerprint: i128 = named
+            .iter()
+            .enumerate()
+            .map(|(index, matrix)| i128::try_from(index + 1).unwrap() * matrix.det().unwrap())
+            .sum();
+        run_adjugate_cell("named_gram", dimension, &named, fingerprint);
+    }
+}
+
 /// Combinations of `n` taken four at a time.
 fn choose_four(n: usize) -> u64 {
     let n = u64::try_from(n).unwrap();
@@ -535,7 +620,6 @@ fn run_enumeration_cell(gram: &Gram<i128>, radius_sq: i128, expected_total: u64,
         stats.leaf_norms, expected_total,
         "{name}: one carried norm per emitted vector"
     );
-
     let elapsed = measured(|| {
         black_box(for_each_short(
             black_box(gram),
@@ -554,8 +638,24 @@ fn run_enumeration_cell(gram: &Gram<i128>, radius_sq: i128, expected_total: u64,
         ))
         .unwrap();
     });
+    let mut scratch = EnumerationScratch::new(dimension).unwrap();
+    let scratch_elapsed = measured(|| {
+        black_box(
+            scratch
+                .for_each(black_box(gram), radius_sq, DEFAULT_NODE_BUDGET, |_, _| {})
+                .unwrap(),
+        )
+    });
+    let scratch_allocations = allocations_during(|| {
+        black_box(
+            scratch
+                .for_each(black_box(gram), radius_sq, DEFAULT_NODE_BUDGET, |_, _| {})
+                .unwrap(),
+        );
+    });
 
     let nanoseconds = elapsed.as_secs_f64() * 1e9;
+    let scratch_nanoseconds = scratch_elapsed.as_secs_f64() * 1e9;
     for (metric, value) in [
         ("enum_ns", format!("{nanoseconds:.2}")),
         ("enum_total", expected_total.to_string()),
@@ -564,6 +664,8 @@ fn run_enumeration_cell(gram: &Gram<i128>, radius_sq: i128, expected_total: u64,
         ("enum_tail_terms", stats.tail_terms.to_string()),
         ("enum_leaf_norms", stats.leaf_norms.to_string()),
         ("enum_allocations", allocations.to_string()),
+        ("enum_scratch_ns", format!("{scratch_nanoseconds:.2}")),
+        ("enum_scratch_allocations", scratch_allocations.to_string()),
     ] {
         println!("{metric},{dimension},{name},{value},{fingerprint}");
     }
@@ -620,6 +722,19 @@ fn run_relevant_cell(gram: &Gram<i64>, expected_total: u64, name: &str) {
         black_box(lattica::relevant::relevant_vectors(black_box(gram), 1 << 28).unwrap());
     });
 
+    // The same parity ball through the bare enumerator: the gap between this
+    // and `relevant_walk_ns` is the per-vector coset bookkeeping. Diagonal
+    // lattices decompose into one-dimensional components, so a full-ball
+    // comparison is meaningless there and only connected cells report it.
+    let walk_only = if is_diagonal(gram) {
+        None
+    } else {
+        let radius_sq = parity_ball_radius(gram);
+        Some(measured(|| {
+            black_box(for_each_short(black_box(gram), radius_sq, 1 << 28, |_, _| {}).unwrap())
+        }))
+    };
+
     for (metric, value) in [
         ("relevant_ns", format!("{:.2}", elapsed.as_secs_f64() * 1e9)),
         ("relevant_allocations", allocations.to_string()),
@@ -633,6 +748,49 @@ fn run_relevant_cell(gram: &Gram<i64>, expected_total: u64, name: &str) {
     ] {
         println!("{metric},{dimension},{name},{value},{fingerprint}");
     }
+    if let Some(walk_only) = walk_only {
+        println!(
+            "relevant_walk_only_ns,{dimension},{name},{:.2},{fingerprint}",
+            walk_only.as_secs_f64() * 1e9
+        );
+    }
+
+    // The reusable scratch over the same workload: the gap to the one-shot
+    // above is the per-call buffer rebuild the scratch removes.
+    let mut reuse = RelevantScratch::<i64>::new(dimension).unwrap();
+    let scratch_elapsed = measured(|| {
+        black_box(reuse.relevant_vectors(black_box(gram), 1 << 28).unwrap());
+    });
+    let scratch_allocations = allocations_during(|| {
+        black_box(reuse.relevant_vectors(black_box(gram), 1 << 28).unwrap());
+    });
+    println!(
+        "relevant_scratch_ns,{dimension},{name},{:.2},{fingerprint}",
+        scratch_elapsed.as_secs_f64() * 1e9
+    );
+    println!("relevant_scratch_allocations,{dimension},{name},{scratch_allocations},{fingerprint}");
+}
+
+/// A diagonal Gram decomposes into one-dimensional components, so its
+/// relevant vectors never exercise the connected coset walk.
+fn is_diagonal(gram: &Gram<i64>) -> bool {
+    let n = gram.dim();
+    (0..n).all(|i| (0..n).all(|j| i == j || gram.entry(i, j) == 0))
+}
+
+/// The parity-ball radius `relevant_vectors` walks: the largest norm among
+/// the 0/1 vectors, holding a representative of every coset of `2Λ`.
+fn parity_ball_radius(gram: &Gram<i64>) -> i128 {
+    let n = gram.dim();
+    let mut representative = vec![0i64; n];
+    let mut radius_sq = 0i128;
+    for mask in 1..(1usize << n) {
+        for (i, value) in representative.iter_mut().enumerate() {
+            *value = i64::from(mask & (1 << i) != 0);
+        }
+        radius_sq = radius_sq.max(Int::widen(gram.norm_sq(&representative).unwrap()));
+    }
+    radius_sq
 }
 
 fn benchmark_relevant() {
@@ -728,6 +886,7 @@ fn main() {
     benchmark_lll();
     benchmark_deep_lll();
     benchmark_algebra();
+    benchmark_adjugate_consumers();
     benchmark_factorization();
     benchmark_enumeration();
     benchmark_relevant();

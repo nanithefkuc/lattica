@@ -9,7 +9,7 @@
 //! position.
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use lattica::kernel::{internals, transform_batch, transform_batch_soa};
+use lattica::kernel::{internals, transform, transform_batch, transform_batch_soa};
 use std::hint::black_box;
 
 /// Transposes an array-of-structures batch into structure-of-arrays planes.
@@ -266,9 +266,29 @@ fn twentyfour_output_aos_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+/// Single-vector transforms at the served dimensions: the per-decode path
+/// every consumer pays, timed here for the single-vector dispatch policy.
+fn single_vector_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("real_transform_single");
+    for dimension in [8usize, 16, 24] {
+        let matrix = matrix(dimension);
+        let input = aos_inputs(dimension, 1);
+        let mut output = vec![0.0; dimension];
+        group.throughput(Throughput::Elements(elements(dimension, 1)));
+        group.bench_with_input(BenchmarkId::new("public", dimension), &dimension, |b, _| {
+            b.iter(|| {
+                transform(&matrix, dimension, dimension, &input, &mut output).unwrap();
+                black_box(&output);
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     sixteen_output_benchmark,
+    single_vector_benchmark,
     twentyfour_output_arithmetic_benchmark,
     twentyfour_output_pipeline_benchmark,
     twentyfour_output_aos_benchmark,

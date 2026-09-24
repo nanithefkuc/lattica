@@ -121,6 +121,39 @@ pub fn det<T: Int>(a: &IntMatrix<T>) -> Result<T, RangeError> {
 /// [`RangeError::Shape`] if the matrix is not square, and
 /// [`RangeError::Overflow`] if a cofactor exceeds the element width.
 pub fn adjugate<T: Int>(a: &IntMatrix<T>) -> Result<IntMatrix<T>, RangeError> {
+    Ok(adjugate_observed(a)?.0)
+}
+
+/// Which elimination path [`adjugate`] took.
+///
+/// The variants name the two branches of the fallback in [`adjugate`]: the
+/// fraction-free elimination shared across every identity right-hand side,
+/// and the direct cofactors used for a singular pivot column or a fixed-width
+/// recurrence that exceeded its budget. Trivial shapes report
+/// [`AdjugatePath::FractionFree`]: they compute no cofactors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdjugatePath {
+    /// Fraction-free Gauss–Jordan elimination.
+    FractionFree,
+    /// Direct cofactors.
+    Cofactors,
+}
+
+/// As [`adjugate`], also reporting which elimination path ran.
+///
+/// Available only with `internals`; not a compatibility promise.
+///
+/// # Errors
+///
+/// As [`adjugate`].
+#[cfg(feature = "internals")]
+pub fn adjugate_profiled<T: Int>(
+    a: &IntMatrix<T>,
+) -> Result<(IntMatrix<T>, AdjugatePath), RangeError> {
+    adjugate_observed(a)
+}
+
+fn adjugate_observed<T: Int>(a: &IntMatrix<T>) -> Result<(IntMatrix<T>, AdjugatePath), RangeError> {
     let n = a.rows();
     if a.cols() != n {
         return Err(RangeError::Shape {
@@ -129,14 +162,14 @@ pub fn adjugate<T: Int>(a: &IntMatrix<T>) -> Result<IntMatrix<T>, RangeError> {
         });
     }
     if n == 0 {
-        return IntMatrix::<T>::zeros(0, 0);
+        return Ok((IntMatrix::<T>::zeros(0, 0)?, AdjugatePath::FractionFree));
     }
     if n == 1 {
-        return IntMatrix::<T>::identity(1);
+        return Ok((IntMatrix::<T>::identity(1)?, AdjugatePath::FractionFree));
     }
     match fraction_free_adjugate(a) {
-        Ok(Some(out)) => Ok(out),
-        Ok(None) | Err(_) => adjugate_cofactors(a),
+        Ok(Some(out)) => Ok((out, AdjugatePath::FractionFree)),
+        Ok(None) | Err(_) => Ok((adjugate_cofactors(a)?, AdjugatePath::Cofactors)),
     }
 }
 
@@ -285,5 +318,23 @@ mod tests {
         let singular = IntMatrix::<i64>::from_rows(3, 3, &[1, 2, 3, 2, 4, 6, 0, 1, 1]).unwrap();
         let adj = adjugate(&singular).unwrap();
         assert_eq!(adj.mul(&singular).unwrap(), IntMatrix::zeros(3, 3).unwrap());
+    }
+    /// The profiled path computes the public adjugate and names the branch.
+    #[cfg(feature = "internals")]
+    #[test]
+    fn profiled_path_matches_the_public_adjugate() {
+        use super::{AdjugatePath, adjugate_profiled};
+
+        let matrix =
+            IntMatrix::<i64>::from_rows(4, 4, &[0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 2, 1, 0, 0, 1, 1])
+                .unwrap();
+        let (adj, path) = adjugate_profiled(&matrix).unwrap();
+        assert_eq!(adj, adjugate(&matrix).unwrap());
+        assert_eq!(path, AdjugatePath::FractionFree);
+
+        let singular = IntMatrix::<i64>::from_rows(3, 3, &[1, 2, 3, 2, 4, 6, 0, 1, 1]).unwrap();
+        let (adj, path) = adjugate_profiled(&singular).unwrap();
+        assert_eq!(adj, adjugate(&singular).unwrap());
+        assert_eq!(path, AdjugatePath::Cofactors);
     }
 }

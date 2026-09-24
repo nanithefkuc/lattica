@@ -192,6 +192,24 @@ impl EnumerationObserver for EnumerationStats {
     }
 }
 
+/// Reusable enumeration buffers: the widened Gram factored in place, the
+/// cleared-denominator weights, and the depth-first coordinates.
+struct Buffers {
+    upper: Vec<i128>,
+    weights: Vec<i128>,
+    coords: Vec<i128>,
+}
+
+impl Buffers {
+    fn new(n: usize) -> Self {
+        Self {
+            upper: vec![0i128; n * n],
+            weights: vec![0i128; n],
+            coords: vec![0i128; n],
+        }
+    }
+}
+
 fn for_each_short_observed<T, F, O>(
     gram: &Gram<T>,
     radius_sq: i128,
@@ -213,20 +231,47 @@ where
         // empty enumeration would present nonsense as a proved fact.
         return Err(EnumerationError::InvalidRadius { radius_sq });
     }
+    let mut buffers = Buffers::new(n);
+    enumerate_with(&mut buffers, gram, radius_sq, budget, visit, observer)
+}
 
-    let widened: Vec<i128> = (0..n)
-        .flat_map(|i| (0..n).map(move |j| (i, j)))
-        .map(|(i, j)| gram.entry(i, j).widen())
-        .collect();
+/// Depth-first enumeration over caller-owned buffers, sized at least for
+/// `gram.dim()`: only the leading entries are read and written.
+///
+/// The Gram's dimension, the empty lattice, and the radius are validated by
+/// the caller before any buffer is written.
+fn enumerate_with<T, F, O>(
+    buffers: &mut Buffers,
+    gram: &Gram<T>,
+    radius_sq: i128,
+    budget: u64,
+    visit: F,
+    observer: &mut O,
+) -> Result<u64, EnumerationError>
+where
+    T: Int,
+    F: FnMut(&[i128], i128),
+    O: EnumerationObserver,
+{
+    let n = gram.dim();
+    if n == 0 {
+        return Ok(0);
+    }
+    let scale = factor_into(&mut buffers.upper, &mut buffers.weights, gram, n)?;
+    let limit = mul(radius_sq, scale)?;
 
-    let factored = Factorization::new(&widened, n)?;
-    let limit = mul(radius_sq, factored.scale)?;
-
+    let Buffers {
+        upper,
+        weights,
+        coords,
+    } = buffers;
     let mut walk = Walk {
-        f: &factored,
+        upper,
+        weights,
+        scale,
         n,
         limit,
-        coords: vec![0i128; n],
+        coords: &mut coords[..],
         budget,
         nodes: 0,
         observer,
@@ -235,7 +280,6 @@ where
     walk.descend(n, 0, 0)?;
     Ok(walk.nodes)
 }
-
 /// Finds the minimal squared norm and the kissing number of a lattice.
 ///
 /// The enumeration radius is the smallest diagonal entry of `G`, which is the
@@ -252,6 +296,20 @@ where
 /// Never: the only `expect` is guarded by the zero-dimension early return
 /// immediately above it.
 pub fn census<T: Int>(gram: &Gram<T>, budget: u64) -> Result<Census<T>, EnumerationError> {
+    census_core(&mut Buffers::new(gram.dim()), gram, budget, &mut Unobserved)
+}
+
+/// The census tally over caller-owned buffers: the diagonal-radius prologue
+/// shared by [`census`], [`census_profiled`], and the reusable scratch.
+///
+/// Radius selection reads only the Gram; buffers are first written by the
+/// factorization inside, which is also where a non-lattice is rejected.
+fn census_core<T: Int, O: EnumerationObserver>(
+    buffers: &mut Buffers,
+    gram: &Gram<T>,
+    budget: u64,
+    observer: &mut O,
+) -> Result<Census<T>, EnumerationError> {
     let n = gram.dim();
     if n == 0 {
         return Ok(Census {
@@ -278,15 +336,22 @@ pub fn census<T: Int>(gram: &Gram<T>, budget: u64) -> Result<Census<T>, Enumerat
     let mut best = i128::MAX;
     let mut at_best = 0u64;
     let mut total = 0u64;
-    let nodes = for_each_short(gram, radius_sq, budget, |_, norm_sq| {
-        total += 1;
-        if norm_sq < best {
-            best = norm_sq;
-            at_best = 1;
-        } else if norm_sq == best {
-            at_best += 1;
-        }
-    })?;
+    let nodes = enumerate_with(
+        buffers,
+        gram,
+        radius_sq,
+        budget,
+        |_, norm_sq| {
+            total += 1;
+            if norm_sq < best {
+                best = norm_sq;
+                at_best = 1;
+            } else if norm_sq == best {
+                at_best += 1;
+            }
+        },
+        observer,
+    )?;
 
     let min_norm_sq = if total == 0 {
         None
@@ -319,131 +384,235 @@ pub fn census_profiled<T: Int>(
     gram: &Gram<T>,
     budget: u64,
 ) -> Result<(Census<T>, EnumerationStats), EnumerationError> {
-    let n = gram.dim();
-    if n == 0 {
-        return Ok((
-            Census {
-                min_norm_sq: None,
-                kissing_number: 0,
-                total: 0,
-                nodes: 0,
-            },
-            EnumerationStats::default(),
-        ));
-    }
-
-    let radius_sq = (0..n)
-        .map(|i| gram.entry(i, i).widen())
-        .min()
-        .expect("dimension is nonzero");
-
-    // As in `census`: a nonpositive minimum diagonal proves the form is not
-    // a lattice before any walk runs.
-    if radius_sq <= 0 {
-        return Err(EnumerationError::NotALattice);
-    }
-
-    let mut best = i128::MAX;
-    let mut at_best = 0u64;
-    let mut total = 0u64;
+    let mut buffers = Buffers::new(gram.dim());
     let mut stats = EnumerationStats::default();
-    let nodes = for_each_short_observed(
-        gram,
-        radius_sq,
-        budget,
-        |_, norm_sq| {
-            total += 1;
-            if norm_sq < best {
-                best = norm_sq;
-                at_best = 1;
-            } else if norm_sq == best {
-                at_best += 1;
-            }
-        },
-        &mut stats,
-    )?;
-
-    let min_norm_sq = if total == 0 {
-        None
-    } else {
-        Some(T::narrow(best)?)
-    };
-    Ok((
-        Census {
-            min_norm_sq,
-            kissing_number: if total == 0 { 0 } else { at_best },
-            total,
-            nodes,
-        },
-        stats,
-    ))
+    let census = census_core(&mut buffers, gram, budget, &mut stats)?;
+    Ok((census, stats))
 }
 
-/// The fraction-free triangular factorization and its cleared denominators.
-struct Factorization {
-    /// Bareiss upper-triangular form, row-major, `n` by `n`.
-    upper: Vec<i128>,
-    /// `weights[k] = scale / (D_k · D_{k+1})`.
-    weights: Vec<i128>,
-    /// `lcm_k(D_k · D_{k+1})`.
-    scale: i128,
+/// Reusable exact-enumeration buffers for one dimension.
+///
+/// The scratch holds the factored form's working storage across calls: the
+/// widened Gram factored in place, the cleared-denominator weights, and the
+/// depth-first coordinates. Each call re-factors its Gram, so the scratch
+/// carries no lattice between calls — only the allocation.
+///
+/// A rejected call leaves the scratch reusable, though not untouched: the
+/// factorization's positive-definiteness test, fallible narrowing, i128
+/// overflow, and budget exhaustion can all fire after buffers are written.
+/// None of that state is observable — only [`dim`](Self::dim) is exposed —
+/// and no later call can read it: every coordinates read follows a write
+/// on the current walk.
+///
+/// Available only with `internals`; not a compatibility promise.
+#[cfg(feature = "internals")]
+pub struct EnumerationScratch {
+    dim: usize,
+    buffers: Buffers,
 }
 
-impl Factorization {
-    fn new(gram: &[i128], n: usize) -> Result<Self, EnumerationError> {
-        let mut m = gram.to_vec();
-        let mut prev = 1i128;
-        for k in 0..n {
-            let pivot = m[k * n + k];
-            // Sylvester: a symmetric matrix is positive definite exactly when
-            // every leading principal minor is positive. Bareiss produces them
-            // on the diagonal, so the check is free here.
-            if pivot <= 0 {
-                return Err(EnumerationError::NotALattice);
+#[cfg(feature = "internals")]
+impl EnumerationScratch {
+    /// Allocates enumeration buffers for `dimension`.
+    ///
+    /// # Errors
+    ///
+    /// [`RangeError::Dimension`] if `dimension` exceeds the crate's maximum
+    /// matrix dimension.
+    pub fn new(dimension: usize) -> Result<Self, EnumerationError> {
+        if dimension > crate::int::MAX_DIM {
+            return Err(RangeError::Dimension {
+                requested: dimension,
+                max: crate::int::MAX_DIM,
             }
-            for i in k + 1..n {
-                let leading = m[i * n + k];
-                for j in k + 1..n {
-                    let cross = sub(mul(m[i * n + j], pivot)?, mul(leading, m[k * n + j])?)?;
-                    m[i * n + j] = exact_div(cross, prev)?;
-                }
-                m[i * n + k] = 0;
-            }
-            prev = pivot;
+            .into());
         }
-
-        // Denominators D_k * D_{k+1}, with D_0 = 1.
-        let mut denominators = Vec::with_capacity(n);
-        let mut previous_minor = 1i128;
-        for k in 0..n {
-            let minor = m[k * n + k];
-            denominators.push(mul(previous_minor, minor)?);
-            previous_minor = minor;
-        }
-
-        let mut scale = 1i128;
-        for &d in &denominators {
-            scale = lcm(scale, d)?;
-        }
-        let weights = denominators
-            .iter()
-            .map(|&d| exact_div(scale, d))
-            .collect::<Result<Vec<_>, _>>()?;
-
         Ok(Self {
-            upper: m,
-            weights,
-            scale,
+            dim: dimension,
+            buffers: Buffers::new(dimension),
         })
     }
+
+    /// The dimension this scratch was sized for.
+    #[must_use]
+    pub const fn dim(&self) -> usize {
+        self.dim
+    }
+
+    /// Enumerates short vectors over reused buffers, identical to
+    /// [`for_each_short`] on the input.
+    ///
+    /// # Errors
+    ///
+    /// [`RangeError::Shape`] if `gram.dim()` does not equal
+    /// [`Self::dim`]; otherwise as [`for_each_short`].
+    pub fn for_each<T, F>(
+        &mut self,
+        gram: &Gram<T>,
+        radius_sq: i128,
+        budget: u64,
+        visit: F,
+    ) -> Result<u64, EnumerationError>
+    where
+        T: Int,
+        F: FnMut(&[i128], i128),
+    {
+        if gram.dim() != self.dim {
+            return Err(RangeError::Shape {
+                expected: self.dim,
+                found: gram.dim(),
+            }
+            .into());
+        }
+        if gram.dim() == 0 {
+            return Ok(0);
+        }
+        if radius_sq < 0 {
+            return Err(EnumerationError::InvalidRadius { radius_sq });
+        }
+        enumerate_with(
+            &mut self.buffers,
+            gram,
+            radius_sq,
+            budget,
+            visit,
+            &mut Unobserved,
+        )
+    }
+
+    /// Counts short vectors over reused buffers, identical to [`census`] on
+    /// the input.
+    ///
+    /// # Errors
+    ///
+    /// [`RangeError::Shape`] if `gram.dim()` does not equal
+    /// [`Self::dim`]; otherwise as [`census`].
+    pub fn census<T: Int>(
+        &mut self,
+        gram: &Gram<T>,
+        budget: u64,
+    ) -> Result<Census<T>, EnumerationError> {
+        if gram.dim() != self.dim {
+            return Err(RangeError::Shape {
+                expected: self.dim,
+                found: gram.dim(),
+            }
+            .into());
+        }
+        census_core(&mut self.buffers, gram, budget, &mut Unobserved)
+    }
+
+    /// Enumerates over the leading entries of oversized buffers: the
+    /// component case of a decomposed lattice, where the stride is the
+    /// component dimension rather than the scratch dimension.
+    ///
+    /// Crate-internal: the caller guarantees `gram.dim()` fits the buffers.
+    /// Only [`RelevantScratch`](crate::relevant::RelevantScratch) calls this,
+    /// which sizes its buffers for the whole lattice.
+    ///
+    /// # Errors
+    ///
+    /// As [`for_each`](EnumerationScratch::for_each).
+    #[cfg(feature = "internals")]
+    pub(crate) fn for_each_prefix<T, F>(
+        &mut self,
+        gram: &Gram<T>,
+        radius_sq: i128,
+        budget: u64,
+        visit: F,
+    ) -> Result<u64, EnumerationError>
+    where
+        T: Int,
+        F: FnMut(&[i128], i128),
+    {
+        if gram.dim() > self.dim {
+            return Err(RangeError::Shape {
+                expected: self.dim,
+                found: gram.dim(),
+            }
+            .into());
+        }
+        if radius_sq < 0 {
+            return Err(EnumerationError::InvalidRadius { radius_sq });
+        }
+        enumerate_with(
+            &mut self.buffers,
+            gram,
+            radius_sq,
+            budget,
+            visit,
+            &mut Unobserved,
+        )
+    }
+}
+
+/// Factors the widened Gram into caller-owned buffers: `upper` holds the
+/// Gram on entry and the Bareiss upper-triangular form on success, and
+/// `weights` holds the cleared denominators. Returns the denominator scale.
+///
+/// Only the leading `n`-by-`n` entries of `upper` and the leading `n`
+/// entries of `weights` are written; the caller sizes them at least so.
+fn factor_into<T: Int>(
+    upper: &mut [i128],
+    weights: &mut [i128],
+    gram: &Gram<T>,
+    n: usize,
+) -> Result<i128, EnumerationError> {
+    for i in 0..n {
+        for j in 0..n {
+            upper[i * n + j] = gram.entry(i, j).widen();
+        }
+    }
+    let mut prev = 1i128;
+    for k in 0..n {
+        let pivot = upper[k * n + k];
+        // Sylvester: a symmetric matrix is positive definite exactly when
+        // every leading principal minor is positive. Bareiss produces them
+        // on the diagonal, so the check is free here.
+        if pivot <= 0 {
+            return Err(EnumerationError::NotALattice);
+        }
+        for i in k + 1..n {
+            let leading = upper[i * n + k];
+            for j in k + 1..n {
+                let cross = sub(
+                    mul(upper[i * n + j], pivot)?,
+                    mul(leading, upper[k * n + j])?,
+                )?;
+                upper[i * n + j] = exact_div(cross, prev)?;
+            }
+            upper[i * n + k] = 0;
+        }
+        prev = pivot;
+    }
+
+    // Denominators D_k * D_{k+1}, with D_0 = 1, formed in the weights
+    // buffer and turned into cleared weights in place.
+    let mut previous_minor = 1i128;
+    for k in 0..n {
+        let minor = upper[k * n + k];
+        weights[k] = mul(previous_minor, minor)?;
+        previous_minor = minor;
+    }
+
+    let mut scale = 1i128;
+    for &denominator in weights.iter().take(n) {
+        scale = lcm(scale, denominator)?;
+    }
+    for weight in weights.iter_mut().take(n) {
+        *weight = exact_div(scale, *weight)?;
+    }
+    Ok(scale)
 }
 
 /// Depth-first traversal state.
 struct Walk<'a, F, O> {
-    f: &'a Factorization,
+    upper: &'a [i128],
+    weights: &'a [i128],
+    scale: i128,
     n: usize,
     limit: i128,
-    coords: Vec<i128>,
+    coords: &'a mut [i128],
     budget: u64,
     nodes: u64,
     observer: O,
@@ -465,27 +634,29 @@ impl<F: FnMut(&[i128], i128), O: EnumerationObserver> Walk<'_, F, O> {
 
         if remaining == 0 {
             self.observer.leaf();
-            if self.coords.iter().all(|&c| c == 0) {
+            // Only the leading entries belong to this walk: oversized
+            // scratch buffers keep stale coordinates past them.
+            let coords = &self.coords[..self.n];
+            if coords.iter().all(|&c| c == 0) {
                 return Ok(());
             }
             // Every level contributed `S_k² · weights[k]` on the way down,
             // so `acc` now holds exactly `c G cᵀ · scale`.
             self.observer.leaf_norm();
-            let norm_sq = exact_div(acc, self.f.scale)?;
-            (self.visit)(&self.coords, norm_sq);
+            let norm_sq = exact_div(acc, self.scale)?;
+            (self.visit)(coords, norm_sq);
             return Ok(());
         }
-
         let k = remaining - 1;
         let n = self.n;
-        let diagonal = self.f.upper[k * n + k];
+        let diagonal = self.upper[k * n + k];
 
         // S_k² · weights[k] ≤ limit - acc, so |S_k| ≤ isqrt((limit - acc) / w).
         let room = sub(self.limit, acc)?;
         if room < 0 {
             return Ok(());
         }
-        let bound = isqrt(room / self.f.weights[k]);
+        let bound = isqrt(room / self.weights[k]);
 
         let lo = ceil_div(sub(neg(bound)?, tail)?, diagonal);
         let hi = floor_div(sub(bound, tail)?, diagonal);
@@ -499,7 +670,7 @@ impl<F: FnMut(&[i128], i128), O: EnumerationObserver> Walk<'_, F, O> {
             for j in k + 1..n {
                 if self.coords[j] != 0 {
                     self.observer.tail_term();
-                    base = add(base, mul(self.f.upper[(k - 1) * n + j], self.coords[j])?)?;
+                    base = add(base, mul(self.upper[(k - 1) * n + j], self.coords[j])?)?;
                 }
             }
             base
@@ -507,7 +678,7 @@ impl<F: FnMut(&[i128], i128), O: EnumerationObserver> Walk<'_, F, O> {
             0
         };
         let child_diagonal = if k > 0 {
-            self.f.upper[(k - 1) * n + k]
+            self.upper[(k - 1) * n + k]
         } else {
             0
         };
@@ -515,7 +686,7 @@ impl<F: FnMut(&[i128], i128), O: EnumerationObserver> Walk<'_, F, O> {
         let mut value = lo;
         while value <= hi {
             let s = add(mul(diagonal, value)?, tail)?;
-            let next = add(acc, mul(mul(s, s)?, self.f.weights[k])?)?;
+            let next = add(acc, mul(mul(s, s)?, self.weights[k])?)?;
             if next <= self.limit {
                 self.coords[k] = value;
                 let child_tail = add(mul(child_diagonal, value)?, child_base)?;
@@ -599,6 +770,8 @@ mod tests {
     use super::{DEFAULT_NODE_BUDGET, census, for_each_short};
     use crate::basis::Gram;
     use crate::error::EnumerationError;
+    #[cfg(feature = "internals")]
+    use crate::error::RangeError;
 
     #[test]
     fn the_integer_lattice_has_two_minimal_vectors_per_axis() {
@@ -773,5 +946,60 @@ mod tests {
             .unwrap();
             assert!(checked > 10, "only {checked} vectors were exercised");
         }
+    }
+
+    /// The reusable scratch visits the same vectors with the same norms and
+    /// counts the same census as the one-shots, twice in a row over the
+    /// same buffers.
+    #[cfg(feature = "internals")]
+    #[test]
+    fn scratch_matches_the_one_shots() {
+        use super::EnumerationScratch;
+        use crate::named::{d_n, e8, zn};
+
+        let cases: Vec<(Gram<i64>, i128)> = vec![
+            (zn(4).unwrap(), 2),
+            (e8().unwrap(), 2),
+            (d_n(6).unwrap(), 4),
+        ];
+        for (gram, radius) in &cases {
+            let mut plain = Vec::new();
+            for_each_short(gram, *radius, DEFAULT_NODE_BUDGET, |coords, norm| {
+                plain.push((coords.to_vec(), norm));
+            })
+            .unwrap();
+            let mut scratch = EnumerationScratch::new(gram.dim()).unwrap();
+            for _ in 0..2 {
+                let mut reused = Vec::new();
+                scratch
+                    .for_each(gram, *radius, DEFAULT_NODE_BUDGET, |coords, norm| {
+                        reused.push((coords.to_vec(), norm));
+                    })
+                    .unwrap();
+                assert_eq!(reused, plain);
+                assert_eq!(
+                    scratch.census(gram, DEFAULT_NODE_BUDGET).unwrap(),
+                    census(gram, DEFAULT_NODE_BUDGET).unwrap()
+                );
+            }
+        }
+
+        // A dimension mismatch and a negative radius are rejected before
+        // any walk runs.
+        let mut scratch = EnumerationScratch::new(4).unwrap();
+        let small = zn::<i64>(2).unwrap();
+        assert!(matches!(
+            scratch.for_each(&small, 2, DEFAULT_NODE_BUDGET, |_, _| {}),
+            Err(EnumerationError::Range(RangeError::Shape { .. }))
+        ));
+        assert!(matches!(
+            scratch.census(&small, DEFAULT_NODE_BUDGET),
+            Err(EnumerationError::Range(RangeError::Shape { .. }))
+        ));
+        let big = zn::<i64>(4).unwrap();
+        assert!(matches!(
+            scratch.for_each(&big, -1, DEFAULT_NODE_BUDGET, |_, _| {}),
+            Err(EnumerationError::InvalidRadius { .. })
+        ));
     }
 }

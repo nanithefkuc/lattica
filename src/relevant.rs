@@ -25,9 +25,14 @@ pub const MAX_RELEVANT_DIM: usize = 16;
 /// A coset is Voronoi-relevant exactly when its minimum is attained by
 /// precisely two vectors and they are negatives. Ties beyond two prove the
 /// coset irrelevant, so nothing past the second block is ever stored.
-#[derive(Default)]
+///
+/// That capping relies on the walk's emission order: vectors arrive in
+/// ascending lexicographic order over `(c_{n-1}, …, c_0)`, and negation
+/// reverses it, so with four or more minima the first two arrivals are
+/// never opposite. A walk that reorders emissions must revisit this.
 struct CosetMinima {
     n: usize,
+    cosets: usize,
     norms: Vec<Option<i128>>,
     counts: Vec<u32>,
     blocks: Vec<i128>,
@@ -37,10 +42,31 @@ impl CosetMinima {
     fn new(cosets: usize, n: usize) -> Self {
         Self {
             n,
+            cosets,
             norms: vec![None; cosets],
             counts: vec![0; cosets],
             blocks: vec![0; 2 * cosets * n],
         }
+    }
+
+    /// Rewinds the leading entries for a component walk: the first `cosets`
+    /// counts are cleared and the first `cosets` norms forgotten, so no
+    /// earlier component's minima leak into this one. Blocks need no
+    /// clearing: [`offer`](Self::offer) writes a block before raising its
+    /// count, and [`materialize_relevant`] only reads blocks whose count
+    /// reached two.
+    ///
+    /// The buffers keep their capacity across calls; the caller sizes them
+    /// for the whole lattice, so every component fits.
+    ///
+    /// Only the reusable scratch calls this, so it exists behind
+    /// `internals` like the other scratch-only items.
+    #[cfg(feature = "internals")]
+    fn reset(&mut self, cosets: usize, n: usize) {
+        self.n = n;
+        self.cosets = cosets;
+        self.norms[..cosets].fill(None);
+        self.counts[..cosets].fill(0);
     }
 
     fn block(&self, mask: usize, slot: usize) -> &[i128] {
@@ -103,7 +129,10 @@ pub fn relevant_vectors<T: Int>(
     node_budget: u64,
 ) -> Result<Vec<Vec<i128>>, EnumerationError> {
     check_dimension(gram.dim())?;
-    let components = orthogonal_components(gram);
+    let mut seen = Vec::new();
+    let mut newly_seen = Vec::new();
+    let mut components = Vec::new();
+    orthogonal_components_into(gram, &mut seen, &mut newly_seen, &mut components);
     if components.len() <= 1 {
         return Ok(relevant_connected(gram, node_budget)?.0);
     }
@@ -117,9 +146,10 @@ pub fn relevant_vectors<T: Int>(
     // the one aggregate budget.
     let dimension = gram.dim();
     let mut remaining = node_budget;
+    let mut gather = Vec::new();
     let mut all = Vec::new();
     for component in &components {
-        let block = component_gram(gram, component);
+        let block = component_gram_into(gram, component, &mut gather);
         let (vectors, nodes) = relevant_connected(&block, remaining)?;
         remaining -= nodes;
         for vector in vectors {
@@ -130,57 +160,214 @@ pub fn relevant_vectors<T: Int>(
             all.push(embedded);
         }
     }
-    all.sort();
+    // Component vectors are distinct, so the stable order and the unstable
+    // order coincide; the unstable sort only drops the merge allocation.
+    all.sort_unstable();
     Ok(all)
 }
 
-/// The connected components of the Gram matrix's off-diagonal support: the
-/// maximal orthogonal direct-sum decomposition of the lattice.
-fn orthogonal_components<T: Int>(gram: &Gram<T>) -> Vec<Vec<usize>> {
+/// Reusable relevant-vector buffers for one lattice dimension.
+///
+/// The scratch holds an [`EnumerationScratch`](crate::shortvec::EnumerationScratch)
+/// for the coset walks, the per-coset minima sized for the whole lattice,
+/// and the decomposition and probe buffers. Each call re-walks its Gram,
+/// so the scratch carries no lattice between calls — only the allocation.
+///
+/// A rejected call leaves the scratch reusable, though not untouched: the
+/// decomposition and probe buffers are rewritten before any fallible check
+/// past the dimension match, and a failed walk can leave coordinates behind.
+/// None of that state is observable — only [`dim`](Self::dim) is exposed —
+/// and no later call can read it: the minima are rewound on entry to every
+/// component walk, and every coordinates read follows a write on the
+/// current walk.
+///
+/// Available only with `internals`; not a compatibility promise.
+#[cfg(feature = "internals")]
+pub struct RelevantScratch<T: Int> {
+    dim: usize,
+    enumeration: crate::shortvec::EnumerationScratch,
+    minima: CosetMinima,
+    seen: Vec<bool>,
+    newly_seen: Vec<usize>,
+    components: Vec<Vec<usize>>,
+    gather: Vec<T>,
+    probe: Vec<T>,
+}
+
+#[cfg(feature = "internals")]
+impl<T: Int> RelevantScratch<T> {
+    /// Allocates relevant-vector buffers for `dimension`.
+    ///
+    /// # Errors
+    ///
+    /// [`RangeError::Dimension`] above [`MAX_RELEVANT_DIM`].
+    pub fn new(dimension: usize) -> Result<Self, EnumerationError> {
+        check_dimension(dimension)?;
+        Ok(Self {
+            dim: dimension,
+            enumeration: crate::shortvec::EnumerationScratch::new(dimension)?,
+            minima: CosetMinima::new(1 << dimension, dimension),
+            seen: Vec::new(),
+            newly_seen: Vec::new(),
+            components: Vec::new(),
+            gather: Vec::new(),
+            probe: Vec::new(),
+        })
+    }
+
+    /// The dimension this scratch was sized for.
+    #[must_use]
+    pub const fn dim(&self) -> usize {
+        self.dim
+    }
+
+    /// Enumerates relevant vectors over reused buffers, identical to
+    /// [`relevant_vectors`] on the input.
+    ///
+    /// # Errors
+    ///
+    /// [`RangeError::Shape`] if `gram.dim()` does not equal
+    /// [`Self::dim`]; otherwise as [`relevant_vectors`].
+    pub fn relevant_vectors(
+        &mut self,
+        gram: &Gram<T>,
+        node_budget: u64,
+    ) -> Result<Vec<Vec<i128>>, EnumerationError> {
+        if gram.dim() != self.dim {
+            return Err(RangeError::Shape {
+                expected: self.dim,
+                found: gram.dim(),
+            }
+            .into());
+        }
+        let n = self.dim;
+        orthogonal_components_into(
+            gram,
+            &mut self.seen,
+            &mut self.newly_seen,
+            &mut self.components,
+        );
+        if self.components.len() <= 1 {
+            let (coset_count, radius_sq) = radius_for_parity_ball_into(gram, &mut self.probe)?;
+            if coset_count == 0 {
+                return Ok(Vec::new());
+            }
+            self.minima.reset(coset_count, n);
+            let minima = &mut self.minima;
+            self.enumeration.for_each_prefix(
+                gram,
+                radius_sq,
+                node_budget,
+                |coordinates, norm_sq| {
+                    minima.offer(parity_mask(coordinates), coordinates, norm_sq, &mut NoSink);
+                },
+            )?;
+            return Ok(materialize_relevant(&self.minima));
+        }
+        let mut remaining = node_budget;
+        let mut all = Vec::new();
+        for index in 0..self.components.len() {
+            let block = component_gram_into(gram, &self.components[index], &mut self.gather);
+            let k = block.dim();
+            let (coset_count, radius_sq) = radius_for_parity_ball_into(&block, &mut self.probe)?;
+            if coset_count == 0 {
+                continue;
+            }
+            self.minima.reset(coset_count, k);
+            let minima = &mut self.minima;
+            let nodes = self.enumeration.for_each_prefix(
+                &block,
+                radius_sq,
+                remaining,
+                |coordinates, norm_sq| {
+                    minima.offer(parity_mask(coordinates), coordinates, norm_sq, &mut NoSink);
+                },
+            )?;
+            remaining -= nodes;
+            let vectors = materialize_relevant(&self.minima);
+            for vector in vectors {
+                let mut embedded = vec![0i128; n];
+                for (position, &coordinate) in self.components[index].iter().enumerate() {
+                    embedded[coordinate] = vector[position];
+                }
+                all.push(embedded);
+            }
+        }
+        all.sort_unstable();
+        Ok(all)
+    }
+}
+
+/// The component decomposition over caller-owned index buffers: `seen` and
+/// `newly_seen` are reused across calls, and finished components accumulate
+/// in `components`, whose inner vectors are cleared and refilled rather
+/// than reallocated.
+///
+/// Only the leading entries are used; the caller sizes every buffer at
+/// least for the lattice dimension.
+fn orthogonal_components_into<T: Int>(
+    gram: &Gram<T>,
+    seen: &mut Vec<bool>,
+    newly_seen: &mut Vec<usize>,
+    components: &mut Vec<Vec<usize>>,
+) {
     let n = gram.dim();
-    let mut seen = vec![false; n];
-    let mut components = Vec::new();
+    seen.clear();
+    seen.resize(n, false);
+    newly_seen.clear();
+    let mut count = 0;
     for start in 0..n {
         if seen[start] {
             continue;
         }
         seen[start] = true;
-        let mut component = vec![start];
+        if count == components.len() {
+            components.push(Vec::new());
+        }
+        let current = &mut components[count];
+        current.clear();
+        current.push(start);
         let mut cursor = 0;
-        while cursor < component.len() {
-            let i = component[cursor];
+        while cursor < current.len() {
+            let i = current[cursor];
             cursor += 1;
-            let mut newly_seen = Vec::new();
+            newly_seen.clear();
             for (j, &visited) in seen.iter().enumerate() {
                 if !visited && j != i && !gram.entry(i, j).is_zero() {
                     newly_seen.push(j);
                 }
             }
-            for j in newly_seen {
+            for &j in newly_seen.iter() {
                 seen[j] = true;
-                component.push(j);
+                current.push(j);
             }
         }
-        component.sort_unstable();
-        components.push(component);
+        current.sort_unstable();
+        count += 1;
     }
-    components
+    components.truncate(count);
 }
 
-/// The Gram matrix of one component's sublattice, in the component's sorted
-/// index order.
-fn component_gram<T: Int>(gram: &Gram<T>, component: &[usize]) -> Gram<T> {
+/// The component Gram gathered into a caller-owned buffer: `gather` is
+/// refilled rather than reallocated. The returned [`Gram`] still copies
+/// once through its checked constructor, which is unavoidable without
+/// changing what a Gram owns.
+fn component_gram_into<T: Int>(
+    gram: &Gram<T>,
+    component: &[usize],
+    gather: &mut Vec<T>,
+) -> Gram<T> {
     let k = component.len();
-    let mut data = vec![T::ZERO; k * k];
+    gather.clear();
+    gather.resize(k * k, T::ZERO);
     for (r, &i) in component.iter().enumerate() {
         for (c, &j) in component.iter().enumerate() {
-            data[r * k + c] = gram.entry(i, j);
+            gather[r * k + c] = gram.entry(i, j);
         }
     }
-    // A principal submatrix of a Gram matrix is square and symmetric, and
-    // `k <= MAX_RELEVANT_DIM` is far below the dimension limit, so the
-    // checked constructor cannot reject it.
-    Gram::from_rows(k, &data).expect("a principal submatrix of a Gram matrix")
+    // As in `component_gram`: a principal submatrix is square and symmetric,
+    // and `k <= MAX_RELEVANT_DIM` is far below the dimension limit.
+    Gram::from_rows(k, gather).expect("a principal submatrix of a Gram matrix")
 }
 
 /// The connected case: one parity-coset classification walk over the whole
@@ -201,6 +388,16 @@ fn relevant_connected<T: Int>(
 /// Computes the parity-coset count and the smallest radius whose ball holds a
 /// representative of every coset: the largest norm among the 0/1 vectors.
 fn radius_for_parity_ball<T: Int>(gram: &Gram<T>) -> Result<(usize, i128), EnumerationError> {
+    let mut representative = Vec::new();
+    radius_for_parity_ball_into(gram, &mut representative)
+}
+
+/// The parity-coset count and radius over a caller-owned probe: the 0/1
+/// representative vector is refilled rather than reallocated.
+fn radius_for_parity_ball_into<T: Int>(
+    gram: &Gram<T>,
+    representative: &mut Vec<T>,
+) -> Result<(usize, i128), EnumerationError> {
     let n = gram.dim();
     if n > MAX_RELEVANT_DIM {
         return Err(RangeError::Dimension {
@@ -214,7 +411,8 @@ fn radius_for_parity_ball<T: Int>(gram: &Gram<T>) -> Result<(usize, i128), Enume
     }
 
     let coset_count = 1usize << n;
-    let mut representative = vec![T::ZERO; n];
+    representative.clear();
+    representative.resize(n, T::ZERO);
     let mut radius_sq = 0i128;
     for mask in 1..coset_count {
         for (i, value) in representative.iter_mut().enumerate() {
@@ -224,7 +422,7 @@ fn radius_for_parity_ball<T: Int>(gram: &Gram<T>) -> Result<(usize, i128), Enume
                 T::ONE
             };
         }
-        radius_sq = radius_sq.max(gram.norm_sq(&representative)?.widen());
+        radius_sq = radius_sq.max(gram.norm_sq(representative)?.widen());
     }
     Ok((coset_count, radius_sq))
 }
@@ -246,7 +444,7 @@ fn collect_coset_minima_with<T: Int, S: CosetSink>(
 
 fn materialize_relevant(minima: &CosetMinima) -> Vec<Vec<i128>> {
     let mut relevant = Vec::new();
-    for mask in 1..minima.norms.len() {
+    for mask in 1..minima.cosets {
         if minima.counts[mask] != 2 {
             continue;
         }
@@ -257,7 +455,9 @@ fn materialize_relevant(minima: &CosetMinima) -> Vec<Vec<i128>> {
             relevant.push(b.to_vec());
         }
     }
-    relevant.sort();
+    // Relevant vectors are distinct, so the stable order and the unstable
+    // order coincide; the unstable sort only drops the merge allocation.
+    relevant.sort_unstable();
     relevant
 }
 
@@ -333,7 +533,10 @@ pub fn relevant_vectors_profiled<T: Int>(
     node_budget: u64,
 ) -> Result<(Vec<Vec<i128>>, RelevantStats), EnumerationError> {
     check_dimension(gram.dim())?;
-    let components = orthogonal_components(gram);
+    let mut seen = Vec::new();
+    let mut newly_seen = Vec::new();
+    let mut components = Vec::new();
+    orthogonal_components_into(gram, &mut seen, &mut newly_seen, &mut components);
     if components.len() <= 1 {
         let (vectors, stats, _nodes) = relevant_connected_profiled(gram, node_budget)?;
         return Ok((vectors, stats));
@@ -344,9 +547,10 @@ pub fn relevant_vectors_profiled<T: Int>(
     let dimension = gram.dim();
     let mut remaining = node_budget;
     let mut total = RelevantStats::default();
+    let mut gather = Vec::new();
     let mut all = Vec::new();
     for component in &components {
-        let block = component_gram(gram, component);
+        let block = component_gram_into(gram, component, &mut gather);
         let (vectors, stats, nodes) = relevant_connected_profiled(&block, remaining)?;
         remaining -= nodes;
         total.setup_ns = total.setup_ns.saturating_add(stats.setup_ns);
@@ -365,7 +569,7 @@ pub fn relevant_vectors_profiled<T: Int>(
         }
     }
     let finalize_start = Instant::now();
-    all.sort();
+    all.sort_unstable();
     total.finalize_ns = total
         .finalize_ns
         .saturating_add(u64::try_from(finalize_start.elapsed().as_nanos()).unwrap_or(u64::MAX));
@@ -439,6 +643,8 @@ mod tests {
     use super::{MAX_RELEVANT_DIM, relevant_vectors};
     use crate::basis::Gram;
     use crate::error::EnumerationError;
+    #[cfg(feature = "internals")]
+    use crate::error::RangeError;
     use crate::named::{a_n, d_n, e8, zn};
     use crate::shortvec::DEFAULT_NODE_BUDGET;
 
@@ -582,6 +788,34 @@ mod tests {
         assert!(matches!(
             relevant_vectors(&cube, 1),
             Err(EnumerationError::EnumerationBudget { .. })
+        ));
+    }
+
+    /// The reusable scratch returns the one-shot's vectors twice in a row
+    /// over the same buffers, on connected and decomposed lattices alike.
+    #[cfg(feature = "internals")]
+    #[test]
+    fn scratch_matches_the_one_shot() {
+        use super::RelevantScratch;
+        use crate::named::{a_n, d_n, e8, zn};
+        for gram in [
+            zn::<i64>(4).unwrap(),
+            a_n::<i64>(4).unwrap(),
+            d_n::<i64>(4).unwrap(),
+            e8::<i64>().unwrap(),
+        ] {
+            let plain = relevant_vectors(&gram, 1 << 20).unwrap();
+            let mut scratch = RelevantScratch::new(gram.dim()).unwrap();
+            for _ in 0..2 {
+                assert_eq!(scratch.relevant_vectors(&gram, 1 << 20).unwrap(), plain);
+            }
+        }
+
+        // A dimension mismatch is rejected before any walk runs.
+        let mut scratch = RelevantScratch::<i64>::new(4).unwrap();
+        assert!(matches!(
+            scratch.relevant_vectors(&zn(2).unwrap(), 1 << 20),
+            Err(EnumerationError::Range(RangeError::Shape { .. }))
         ));
     }
 }
