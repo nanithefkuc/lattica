@@ -1,0 +1,19 @@
+[package]
+name = "lattica-bench-fplll"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+license = "MIT"
+description = "In-process fplll 5.5.0 LLL comparison for lattica (matched CSV harness)"
+
+# A separate package, not a bench target of `lattica`: the comparison lives
+# in the repository only. The package exclusion in `../../Cargo.toml` keeps
+# this directory out of `cargo package`, so the harness never publishes.
+
+[dependencies]
+lattica = { path = "../.." }
+
+[[bin]]
+name = "lattica-bench-fplll"
+path = "src/main.rs"

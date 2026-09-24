@@ -141,12 +141,13 @@ pub enum AdjugatePath {
 
 /// As [`adjugate`], also reporting which elimination path ran.
 ///
-/// Available only with `internals`; not a compatibility promise.
+/// Reachable only through the `internals` facade; not a compatibility promise.
 ///
 /// # Errors
 ///
 /// As [`adjugate`].
-#[cfg(feature = "internals")]
+// Reachable only through the `internals` facade.
+#[allow(dead_code)]
 pub fn adjugate_profiled<T: Int>(
     a: &IntMatrix<T>,
 ) -> Result<(IntMatrix<T>, AdjugatePath), RangeError> {
@@ -320,7 +321,6 @@ mod tests {
         assert_eq!(adj.mul(&singular).unwrap(), IntMatrix::zeros(3, 3).unwrap());
     }
     /// The profiled path computes the public adjugate and names the branch.
-    #[cfg(feature = "internals")]
     #[test]
     fn profiled_path_matches_the_public_adjugate() {
         use super::{AdjugatePath, adjugate_profiled};

@@ -1,3 +1,6 @@
 /target
 .plans/
 /.lucid
+.sheaf/
+/external/*/target
+/external/*/Cargo.lock

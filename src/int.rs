@@ -21,14 +21,12 @@
 //! wider type or falls back to floating point; an overflow is a
 //! [`RangeError::Overflow`] naming the width it exceeded.
 
-mod det;
+pub(crate) mod det;
 mod hnf;
 mod matrix;
 mod snf;
 
-#[cfg(feature = "internals")]
-pub use det::adjugate_profiled;
-pub use det::{AdjugatePath, adjugate, det};
+pub use det::{adjugate, det};
 pub use hnf::{Hnf, hnf, hnf_form, hnf_mod_det};
 pub use matrix::{IntMatrix, MAX_DIM};
 pub use snf::invariant_factors;

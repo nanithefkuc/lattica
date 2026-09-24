@@ -13,8 +13,8 @@ pub fn transform_batch_soa_avx2(
     outputs: &mut [f64],
 ) {
     // Zero-length chunking is undefined; an empty batch is a no-op. The
-    // public gate never routes an empty batch here, but the internals surface
-    // can call this kernel directly.
+    // public gate never routes an empty batch here, but the `internals`
+    // facade can call this kernel directly.
     if vectors == 0 {
         return;
     }
@@ -56,6 +56,10 @@ macro_rules! fixed_24_kernel {
     ($name:ident, $block:expr) => {
         /// Fixed-geometry 24-by-24 `SoA` kernel; see the family comment above
         /// for the exactness argument.
+        // The rejected block sizes are reachable only through the `internals`
+        // facade, so the library target without that feature reports them as
+        // unused.
+        #[allow(dead_code)]
         #[allow(clippy::used_underscore_binding)]
         #[arcane(import_intrinsics)]
         pub fn $name(
@@ -110,9 +114,7 @@ macro_rules! fixed_24_kernel {
 
 // The dispatched kernel is block 12. Blocks 6 and 8 are the rejected
 // alternatives retained as benchmark evidence, reachable only through the
-// unstable internals surface.
-#[cfg(feature = "internals")]
+// `internals` facade.
 fixed_24_kernel!(transform_batch_soa_fixed_24_block6, 6);
-#[cfg(feature = "internals")]
 fixed_24_kernel!(transform_batch_soa_fixed_24_block8, 8);
 fixed_24_kernel!(transform_batch_soa_fixed_24_block12, 12);

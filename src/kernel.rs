@@ -14,7 +14,7 @@
 use crate::error::RangeError;
 
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
-mod x86;
+pub(crate) mod x86;
 
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 use simdispatch::{Backend, Selection};
@@ -53,7 +53,7 @@ pub fn transform(
             found: out.len(),
         });
     }
-    transform_scalar(matrix, cols, input, out);
+    portable::transform_scalar(matrix, cols, input, out);
     Ok(())
 }
 
@@ -113,7 +113,7 @@ pub fn transform_batch(
             return Ok(());
         }
     }
-    transform_batch_scalar(matrix, rows, cols, inputs, outputs);
+    portable::transform_batch_scalar(matrix, rows, cols, inputs, outputs);
     Ok(())
 }
 
@@ -123,7 +123,7 @@ pub fn transform_batch(
 /// Each run is packed plane-major into stack scratch sized for `CHUNK`
 /// vectors, dispatched with the run's own lane count, and unpacked. Lanes are
 /// independent vectors, so packing changes no arithmetic: the result is
-/// bit-identical to [`transform_batch_scalar`] at every batch size, ragged
+/// bit-identical to [`portable::transform_batch_scalar`] at every batch size, ragged
 /// tails included. The stack scratch keeps the steady state allocation-free.
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 fn dispatch_aos_24(
@@ -235,7 +235,7 @@ pub fn transform_batch_soa(
         }
     }
 
-    transform_batch_soa_scalar(matrix, cols, vectors, inputs, outputs);
+    portable::transform_batch_soa_scalar(matrix, cols, vectors, inputs, outputs);
     Ok(())
 }
 
@@ -270,60 +270,21 @@ fn backend() -> Backend {
     *BACKEND
 }
 
-fn transform_scalar(matrix: &[f64], cols: usize, input: &[f64], out: &mut [f64]) {
-    out.fill(0.0);
-    for (row, &value) in input.iter().enumerate() {
-        let coefficients = &matrix[row * cols..(row + 1) * cols];
-        for (slot, &coefficient) in out.iter_mut().zip(coefficients) {
-            *slot += value * coefficient;
-        }
-    }
-}
-
-fn transform_batch_scalar(
-    matrix: &[f64],
-    rows: usize,
-    cols: usize,
-    inputs: &[f64],
-    outputs: &mut [f64],
-) {
-    for (input, out) in inputs
-        .chunks_exact(rows)
-        .zip(outputs.chunks_exact_mut(cols))
-    {
-        transform_scalar(matrix, cols, input, out);
-    }
-}
-
-fn transform_batch_soa_scalar(
-    matrix: &[f64],
-    cols: usize,
-    vectors: usize,
-    inputs: &[f64],
-    outputs: &mut [f64],
-) {
-    if vectors == 0 {
-        // Every output plane is empty; zero-length chunking is undefined.
-        return;
-    }
-    for column in 0..cols {
-        let out = &mut outputs[column * vectors..(column + 1) * vectors];
-        out.fill(0.0);
-        for (row, input) in inputs.chunks_exact(vectors).enumerate() {
-            let coefficient = matrix[row * cols + column];
-            for (slot, &value) in out.iter_mut().zip(input) {
-                *slot += coefficient * value;
-            }
-        }
-    }
-}
-
-/// Unstable implementation access for differential tests and benchmarks.
-#[cfg(feature = "internals")]
-pub mod internals {
+/// Portable scalar references for the dispatched transforms.
+///
+/// The single-vector and batch kernels here are the bit-identity oracles:
+/// every dispatched path performs the same operations in the same order.
+/// Reachable externally only through the `internals` facade.
+pub(crate) mod portable {
     /// Portable scalar reference for [`super::transform`].
     pub fn transform_scalar(matrix: &[f64], cols: usize, input: &[f64], out: &mut [f64]) {
-        super::transform_scalar(matrix, cols, input, out);
+        out.fill(0.0);
+        for (row, &value) in input.iter().enumerate() {
+            let coefficients = &matrix[row * cols..(row + 1) * cols];
+            for (slot, &coefficient) in out.iter_mut().zip(coefficients) {
+                *slot += value * coefficient;
+            }
+        }
     }
 
     /// Portable scalar reference for [`super::transform_batch`].
@@ -334,7 +295,12 @@ pub mod internals {
         inputs: &[f64],
         outputs: &mut [f64],
     ) {
-        super::transform_batch_scalar(matrix, rows, cols, inputs, outputs);
+        for (input, out) in inputs
+            .chunks_exact(rows)
+            .zip(outputs.chunks_exact_mut(cols))
+        {
+            transform_scalar(matrix, cols, input, out);
+        }
     }
 
     /// Portable scalar reference for [`super::transform_batch_soa`].
@@ -345,19 +311,21 @@ pub mod internals {
         inputs: &[f64],
         outputs: &mut [f64],
     ) {
-        super::transform_batch_soa_scalar(matrix, cols, vectors, inputs, outputs);
+        if vectors == 0 {
+            // Every output plane is empty; zero-length chunking is undefined.
+            return;
+        }
+        for column in 0..cols {
+            let out = &mut outputs[column * vectors..(column + 1) * vectors];
+            out.fill(0.0);
+            for (row, input) in inputs.chunks_exact(vectors).enumerate() {
+                let coefficient = matrix[row * cols + column];
+                for (slot, &value) in out.iter_mut().zip(input) {
+                    *slot += coefficient * value;
+                }
+            }
+        }
     }
-
-    /// Dispatched x86 kernel for arbitrary geometries, exposed so benchmarks
-    /// can time shapes that the public gate does not select.
-    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
-    pub use super::x86::transform_batch_soa_avx2 as transform_batch_soa_avx2_generic;
-
-    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
-    pub use super::x86::{
-        transform_batch_soa_fixed_24_block6, transform_batch_soa_fixed_24_block8,
-        transform_batch_soa_fixed_24_block12,
-    };
 }
 
 #[cfg(test)]
@@ -367,10 +335,8 @@ pub mod internals {
     clippy::float_cmp
 )]
 mod tests {
-    use super::{
-        transform, transform_batch, transform_batch_scalar, transform_batch_soa,
-        transform_batch_soa_scalar, transform_scalar,
-    };
+    use super::portable::{transform_batch_scalar, transform_batch_soa_scalar, transform_scalar};
+    use super::{transform, transform_batch, transform_batch_soa};
 
     #[test]
     fn dispatched_transform_is_bit_identical_across_boundaries() {
@@ -491,10 +457,10 @@ mod tests {
         }
     }
 
-    #[cfg(all(feature = "simd", feature = "internals", target_arch = "x86_64"))]
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     mod fixed_24 {
-        use super::transform_batch_soa_scalar;
-        use crate::kernel::internals::{
+        use super::super::portable::transform_batch_soa_scalar;
+        use super::super::x86::{
             transform_batch_soa_fixed_24_block6, transform_batch_soa_fixed_24_block8,
             transform_batch_soa_fixed_24_block12,
         };

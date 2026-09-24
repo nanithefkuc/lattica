@@ -7,8 +7,8 @@
 //! structure belongs in `fff`, on the consumer's side of the boundary.
 //!
 //! Only the lattice path is public: reducing integers into residues and
-//! lifting them out. The composition laws — `add`, `sub`, `neg`, `mul` —
-//! exist for the unstable `internals` surface; no operation in this crate or
+//! lifting them out. The composition laws — `add`, `sub`, `neg`, `mul` — live
+//! behind the unstable `internals` facade; no operation in this crate or
 //! its consumers composes residues, and general modular arithmetic is a
 //! different mathematical object from a lattice.
 //!
@@ -141,55 +141,6 @@ impl Zq {
         self.center(r)
     }
 
-    /// Modular addition of two reduced residues.
-    ///
-    /// Unstable: no lattice path composes residues, so this exists only behind
-    /// the `internals` feature.
-    // Cast: the sum of two values below `q` is below `2q`, and one conditional
-    // subtraction brings it below `q`.
-    #[cfg(feature = "internals")]
-    #[allow(clippy::cast_possible_truncation)]
-    #[must_use]
-    pub const fn add(&self, a: u32, b: u32) -> u32 {
-        debug_assert!(a < self.q && b < self.q, "operand is not reduced");
-        let s = a as u64 + b as u64;
-        if s >= self.q as u64 {
-            (s - self.q as u64) as u32
-        } else {
-            s as u32
-        }
-    }
-
-    /// Modular subtraction of two reduced residues.
-    ///
-    /// Unstable: as [`add`](Self::add).
-    #[cfg(feature = "internals")]
-    #[must_use]
-    pub const fn sub(&self, a: u32, b: u32) -> u32 {
-        debug_assert!(a < self.q && b < self.q, "operand is not reduced");
-        if a >= b { a - b } else { self.q - (b - a) }
-    }
-
-    /// Modular negation of a reduced residue.
-    ///
-    /// Unstable: as [`add`](Self::add).
-    #[cfg(feature = "internals")]
-    #[must_use]
-    pub const fn neg(&self, a: u32) -> u32 {
-        debug_assert!(a < self.q, "operand is not reduced");
-        if a == 0 { 0 } else { self.q - a }
-    }
-
-    /// Modular multiplication of two reduced residues.
-    ///
-    /// Unstable: as [`add`](Self::add).
-    #[cfg(feature = "internals")]
-    #[must_use]
-    pub const fn mul(&self, a: u32, b: u32) -> u32 {
-        debug_assert!(a < self.q && b < self.q, "operand is not reduced");
-        self.reduce_u64(a as u64 * b as u64)
-    }
-
     /// Reduces a slice of signed values into residues.
     ///
     /// # Errors
@@ -218,6 +169,67 @@ impl Zq {
             *d = self.lift(s);
         }
         Ok(())
+    }
+}
+
+/// Unstable residue-composition operations for [`Zq`].
+///
+/// No lattice path composes residues; general modular arithmetic is a
+/// different mathematical object from a lattice. Reachable externally only
+/// through the `internals` facade; not a compatibility promise.
+// Unstable items are reachable only through the `internals` facade, so the
+// library target without that feature reports them as unused.
+#[allow(dead_code)]
+pub(crate) mod composition {
+    use super::Zq;
+
+    /// Unstable composition laws for [`Zq`].
+    pub trait ZqComposition {
+        /// Modular addition of two reduced residues.
+        #[must_use]
+        fn add(&self, a: u32, b: u32) -> u32;
+
+        /// Modular subtraction of two reduced residues.
+        #[must_use]
+        fn sub(&self, a: u32, b: u32) -> u32;
+
+        /// Modular negation of a reduced residue.
+        #[must_use]
+        fn neg(&self, a: u32) -> u32;
+
+        /// Modular multiplication of two reduced residues.
+        #[must_use]
+        fn mul(&self, a: u32, b: u32) -> u32;
+    }
+
+    impl ZqComposition for Zq {
+        // Cast: the sum of two values below `q` is below `2q`, and one
+        // conditional subtraction brings it below `q`.
+        #[allow(clippy::cast_possible_truncation)]
+        fn add(&self, a: u32, b: u32) -> u32 {
+            debug_assert!(a < self.q && b < self.q, "operand is not reduced");
+            let s = u64::from(a) + u64::from(b);
+            if s >= u64::from(self.q) {
+                (s - u64::from(self.q)) as u32
+            } else {
+                s as u32
+            }
+        }
+
+        fn sub(&self, a: u32, b: u32) -> u32 {
+            debug_assert!(a < self.q && b < self.q, "operand is not reduced");
+            if a >= b { a - b } else { self.q - (b - a) }
+        }
+
+        fn neg(&self, a: u32) -> u32 {
+            debug_assert!(a < self.q, "operand is not reduced");
+            if a == 0 { 0 } else { self.q - a }
+        }
+
+        fn mul(&self, a: u32, b: u32) -> u32 {
+            debug_assert!(a < self.q && b < self.q, "operand is not reduced");
+            self.reduce_u64(u64::from(a) * u64::from(b))
+        }
     }
 }
 
@@ -304,9 +316,9 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "internals")]
     #[test]
     fn ring_operations_agree_with_integer_arithmetic() {
+        use super::composition::ZqComposition;
         for q in 2..=32u32 {
             let r = zq(q);
             for a in 0..q {
