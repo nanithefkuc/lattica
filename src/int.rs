@@ -356,6 +356,7 @@ pub fn div_nearest<T: Int>(a: T, b: T) -> Result<T, RangeError> {
 /// the pair `(s, t)` usable to build a unimodular elimination step, which is
 /// how [`hnf`] keeps its transform provably determinant-preserving.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Xgcd<T: Int> {
     /// The greatest common divisor, non-negative.
     pub g: T,

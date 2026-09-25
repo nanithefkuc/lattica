@@ -1,8 +1,9 @@
 # Repository Guidelines
 
-Working rules for changing `lattica`. Rustdoc owns API contracts, `README.md`
-owns scope and usage, `BENCHMARKS.md` owns public measurements, and
-`CHANGELOG.md` owns release changes and migration guidance.
+Working rules for changing `lattica`. Item and module rustdoc owns API
+contracts, the crate-level page is `README.md` included from `src/lib.rs` so
+scope and usage are written once, `BENCHMARKS.md` owns public measurements,
+and `CHANGELOG.md` owns release changes and migration guidance.
 
 ## Required workflow
 
@@ -110,7 +111,10 @@ attribute, so the library prohibition is not a claim that the repository has
 no unsafe code. Changes to those adapters require narrow per-item allowances
 and local SINCE–THUS proofs of their allocator obligations.
 
-`TIERS` is `v3 scalar`. A requested tier may be unsupported, and a selected
+`TIERS` is `v3 scalar`. `V3GfniCrypto` shares the V3 dispatch arm and is
+covered by direct kernel tests; it stays out of the sweep so every swept tier
+resolves to a distinct arm on hosts without that tier, where a forced request
+is silently ignored. A requested tier may be unsupported, and a selected
 backend may still use the portable path for a particular geometry. Inspect the
 resolved backend and exercise the kernel directly before claiming ISA coverage.
 `MIRI` is empty: `just unsafe-check` reports a skip. `COV_IGNORE` is empty:

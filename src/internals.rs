@@ -16,9 +16,9 @@ pub mod kernel {
     };
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     pub use crate::kernel::x86::{
-        transform_batch_soa_avx2 as transform_batch_soa_avx2_generic,
-        transform_batch_soa_fixed_16_block8, transform_batch_soa_fixed_24_block6,
-        transform_batch_soa_fixed_24_block8, transform_batch_soa_fixed_24_block12,
+        transform_batch_soa_avx2, transform_batch_soa_fixed_16_block8,
+        transform_batch_soa_fixed_24_block6, transform_batch_soa_fixed_24_block8,
+        transform_batch_soa_fixed_24_block12,
     };
 }
 

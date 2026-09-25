@@ -6,8 +6,8 @@
 //! same order as the scalar reference. The dispatched result is bit-identical,
 //! not merely numerically close.
 //!
-//! Two shapes dispatch on x86 v3 hardware: any row count of sixteen outputs at
-//! sixty-four vectors or more, and the exact twenty-four-by-twenty-four
+//! Two shapes dispatch on x86 v3 hardware: sixteen outputs at any batch size
+//! through the fixed block-8 kernel, and the exact twenty-four-by-twenty-four
 //! geometry at every batch size, where a fixed-geometry kernel carries all
 //! twelve output blocks per pass in registers.
 
@@ -25,10 +25,10 @@ const LATTICA_TIERS: &[Backend] = &[Backend::V3GfniCrypto, Backend::V3, Backend:
 /// Applies a column-major dense transform, `out = input * matrix`.
 ///
 /// `matrix` contains `rows` contiguous rows of `cols` output coefficients.
-/// The output is initialized by this call. Single-vector geometry deliberately
-/// uses the scalar kernel: measurements show dispatch overhead dominates at
-/// the dimensions served by this crate. Use [`transform_batch`] to amortize
-/// dispatch over many vectors.
+/// The output is initialized by this call. Single-vector geometry uses the
+/// scalar kernel: dispatch overhead dominates at the dimensions served by
+/// this crate, as recorded under dispatch geometry in `BENCHMARKS.md`. Use
+/// [`transform_batch`] to amortize dispatch over many vectors.
 ///
 /// # Errors
 ///
@@ -447,8 +447,8 @@ mod tests {
 
     #[test]
     fn an_empty_soa_batch_is_accepted_on_every_geometry() {
-        // Zero vectors with valid matrix geometry used to panic in the
-        // portable reference's `chunks_exact(0)`.
+        // Zero vectors with valid matrix geometry cover the portable
+        // reference's zero-length chunking path.
         for (rows, cols) in [(4usize, 4usize), (16, 16), (24, 24)] {
             let matrix = vec![0.25; rows * cols];
             assert_eq!(
@@ -579,8 +579,7 @@ mod tests {
             }
         }
 
-        /// Sixteen columns dispatch at every batch size, including below the
-        /// old sixty-four-vector gate.
+        /// Sixteen columns dispatch at every batch size.
         #[test]
         fn sixteen_columns_dispatch_without_a_batch_threshold() {
             for rows in [1usize, 16, 24] {

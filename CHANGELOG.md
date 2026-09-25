@@ -5,7 +5,7 @@ All notable changes to `lattica` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0] - 2026-09-25
 
 ### Added
 - `shortvec::EnumerationScratch` and `relevant::RelevantScratch` behind
@@ -22,12 +22,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - `int::hnf_form`: the row Hermite form and rank without the unimodular
   transform, sharing `hnf`'s exact elimination sequence. The construction
-  paths, `Basis::rank`, and `Nested::new` moved to it — `Nested::new` now
-  derives the index from the Hermite diagonal product instead of a separate
-  Bareiss determinant — improving the generator constructions by 1.36x to
-  1.85x, `Basis::rank` by 1.17x to 1.48x, and `Nested::new` by 2.6x to 6.1x
-  across dimensions 8 to 48. A construction corpus (`construction_ns`) with
-  deterministic fingerprints now covers these paths.
+  paths, `Basis::rank`, and `Nested::new` moved to it — `Nested::new` derives
+  the index from the Hermite diagonal product instead of a separate Bareiss
+  determinant. A construction corpus (`construction_ns`) with deterministic
+  fingerprints now covers these paths.
 
 ### Changed
 
@@ -59,13 +57,15 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `relevant_vectors` decomposes orthogonal direct sums: connected components
   of the Gram matrix's off-diagonal support are enumerated separately and
   embedded, charged against the one aggregate node budget, with the dimension
-  cap enforced before decomposition. Fully decomposable inputs improve by
-  orders of magnitude (`Z^12`: 213 ms to 4.4 us); connected inputs keep the
-  original single-walk path at measured parity.
+  cap enforced before decomposition. Connected inputs keep the original
+  single-walk path. Timings are recorded under relevant vectors in
+  `BENCHMARKS.md`.
 - `transform_batch` dispatches the exact twenty-four-by-twenty-four geometry
   through the fixed kernel from four vectors upward, packing bounded runs
   through stack scratch so the batch stays allocation-free and bit-identical
-  to the portable path.
+  to the portable path. `transform_batch_soa` dispatches sixteen outputs at
+  every batch size through the fixed block-8 kernel. Dispatch geometry and
+  timings are recorded in `BENCHMARKS.md`.
 
 - **Breaking:** `DecodeError` is now `EnumerationError`, and the decode-only
   variants (`BudgetExhausted` with a search radius, `InvalidRadius` and
@@ -82,19 +82,83 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   unstable `internals` feature. No lattice path composes residues; the public
   surface is the residue bridge — reduction, centered representatives, and
   lift — that Construction A and shaping consume.
-- CI's dependency-boundary job is now an allowlist over direct dependencies
-  (`archmage`, `simdispatch`, `criterion`) rather than a denylist of renamed
-  crates.
+- Ordinary exact LLL delays size-reduction quotients that cannot affect the
+  next Lovász test until that test passes. Reduction operation counts and
+  exact certificates are unchanged.
+- Exact LLL filters coefficients already within the size-reduction bound using
+  an overflow-safe integer comparison before checked division. Reduction
+  operation counts and certificates are unchanged.
+- Unstable reduction profiling now partitions coefficient checks into exact
+  zero proofs and checked divisions and counts later GSO terms touched by
+  adjacent swaps. The optimization harness times ordinary `lll` separately
+  from its one profiled counter sample.
+- Transactional LLL Gram and transform updates use validated contiguous rows
+  for preflight and commit while preserving checked arithmetic order.
+  Certificates and operation counts are unchanged.
+- Exact adjacent GSO swaps hoist invariant minors and update their two affected
+  rows through contiguous preflight and commit slices. Certificates and
+  operation counts are unchanged; the fplll comparison is recorded in
+  `BENCHMARKS.md`.
+- Deep-insertion LLL now has deterministic insertion-heavy benchmark corpora at
+  dimensions 8, 16, and 24. Unstable profiling counts suffix-predicate terms,
+  denominator rescalings, and exact divisions; the harness times ordinary LLL,
+  deep LLL, and their full certificate checks independently.
+- Deep-insertion predicates reuse an existing exact suffix scale instead of
+  recomputing its GCD and LCM when the next denominator already divides it.
+  Decisions, checked overflow boundaries, operation counts, and ordinary LLL
+  are unchanged.
+- Unstable benchmarking now times the initial exact factorization alone over
+  the existing deterministic corpora, stratified by dimension, shear density,
+  and entry width. Cells outside a width's accepted domain report the
+  deterministic `overflow` boundary instead of a time.
+- Unstable `ReductionWorkspace` reuses the Gram copy, transform, row scratch,
+  and exact factorization buffers across same-dimension reductions. Repeated
+  calls allocate only the returned matrices, with results bit-identical to
+  the one-shot functions and unchanged one-shot behavior.
+- Unstable benchmarking now profiles exact short-vector enumeration: node,
+  leaf, tail-term, and direct-norm counters over a named-lattice corpus whose
+  vector counts are checked against closed-form shell formulas before any
+  timing. The harness reports per-call allocations through its counting
+  allocator.
+- Exact enumeration amortizes each suffix dot product across a node's whole
+  sibling group instead of recomputing one per child. Emitted vectors and
+  counts are unchanged.
+- Exact enumeration derives each emitted vector's norm from the accumulated
+  scaled partial sum — exactly `c G cᵀ · scale` at completion — instead of
+  recomputing the quadratic form. Every carried norm is checked against a
+  direct `O(n²)` oracle in tests.
+- Unstable benchmarking now profiles relevant-vector enumeration with
+  per-stage timings and coset-event counters over a named-lattice corpus
+  whose outputs are checked against published facet counts. New fixtures pin
+  the facet counts, opposite pairing, and lexicographic order of the public
+  result.
+- Relevant-vector coset minima now live in flat storage — one norm, an
+  arrival count capped past two, and two coordinate blocks per coset — so
+  the classification walk allocates nothing per vector. Per-call allocation
+  behavior is covered by counting-allocator tests; ties beyond the second
+  are proved irrelevant exactly as before.
+- The exact twenty-four-by-twenty-four structure-of-arrays transform
+  dispatches on x86 v3 hardware at every batch size through a fixed-geometry
+  kernel that keeps twelve output blocks in registers across the row loop.
+  Output stays bit-identical across lane boundaries, ragged tails, row-count
+  fallbacks, and backend overrides; timings are recorded under 24-output SoA
+  dispatch in `BENCHMARKS.md`. Unstable `internals` exposes the portable
+  references and x86 kernels for differential tests and benchmarks.
+- The transform benchmark harness separates coordinate arithmetic from
+  array-of-structures conversion: a transpose-only group times layout work
+  alone and a pipeline group adds it to the fastest candidates, so an
+  array-of-structures consumer can judge its end-to-end position against the
+  24-output AoS dispatch table in `BENCHMARKS.md`.
 
 ### Fixed
 
 - `Nested::from_bases` verifies that the solved transform reconstructs the
-  shaping basis exactly. Integral *projected* coordinates used to pass the
-  inclusion check even when a shaping vector had a component outside the
-  coding basis's span, silently describing a pair that is not nested.
-- `Nested::coset_representative` is transactional: a rejected index no longer
-  writes partial digits into the output buffer, and radices wider than `u64`
-  now resolve small indices instead of failing the radix conversion.
+  shaping basis exactly. Integral projected coordinates alone no longer pass
+  the inclusion check when a shaping vector lies outside the coding basis's
+  span, which previously described a pair that is not nested.
+- `Nested::coset_representative` is transactional: a rejected index leaves the
+  output buffer unchanged, and radices wider than `u64` resolve small indices
+  instead of failing the radix conversion.
 - `Nested::coset_representatives` reserves fallibly, so a codebook that
   cannot fit in memory returns the documented range error instead of
   aborting on a capacity overflow.
@@ -103,8 +167,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   oversized dimension returns the documented `LatticeError::Range` instead of
   panicking on an overflowing element count.
 - `transform_batch_soa` accepts an empty batch on every backend; the portable
-  reference used to panic on zero-length chunking for geometries without a
-  dispatched kernel.
+  reference handles zero-length chunking for geometries without a dispatched
+  kernel.
 - The public `IntMatrix` mutators (`row_sub_mul`, `col_sub_mul`, `negate_row`,
   `negate_col`) are transactional: an overflowing update restores every entry
   it had already written, matching the crate-wide rule that a rejected call
@@ -113,85 +177,7 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   outer reservation, the scratch buffer, and each representative row — so an
   exhausted allocator surfaces as the documented range error instead of an
   abort. A dedicated regression test denies allocation outright and asserts
-  the typed error; cross-review by a second model caught the gap after the
-  outer reservation alone had been made fallible.
-
-### Changed
-
-
-- Ordinary exact LLL delays size-reduction quotients that cannot affect the
-  next Lovász test until that test passes. The comparison corpus improves by
-  14.1% to 16.9% at dimensions 8, 16, and 24 without changing its reduction
-  operation counts or exact certificates.
-- Exact LLL filters coefficients already within the size-reduction bound using
-  an overflow-safe integer comparison before checked division. The post-lazy
-  comparison corpus improves by another 12.3% to 12.7% without changing
-  reduction operation counts or certificates.
-- Unstable reduction profiling now partitions coefficient checks into exact
-  zero proofs and checked divisions and counts later GSO terms touched by
-  adjacent swaps. The optimization harness times ordinary `lll` separately
-  from its one profiled counter sample.
-- Transactional LLL Gram and transform updates use validated contiguous rows
-  for preflight and commit while preserving checked arithmetic order. The nine
-  reduction geometries improve by 3.3% to 10.9%, with unchanged certificates
-  and operation counts.
-- Exact adjacent GSO swaps hoist invariant minors and update their two affected
-  rows through contiguous preflight and commit slices. Eight of nine reduction
-  geometries improve, including 4.2% to 7.9% at dimensions 16 and 24; the
-  comparison corpus reaches measurement parity with fplll there.
-- Deep-insertion LLL now has deterministic insertion-heavy benchmark corpora at
-  dimensions 8, 16, and 24. Unstable profiling counts suffix-predicate terms,
-  denominator rescalings, and exact divisions; the harness times ordinary LLL,
-  deep LLL, and their full certificate checks independently.
-- Deep-insertion predicates reuse an existing exact suffix scale instead of
-  recomputing its GCD and LCM when the next denominator already divides it.
-  The insertion-heavy corpora improve by 14.9% to 19.9% with unchanged
-  decisions, checked overflow boundaries, operation counts, and ordinary LLL.
-- Unstable benchmarking now times the initial exact factorization alone over
-  the existing deterministic corpora, stratified by dimension, shear density,
-  and entry width. Cells outside a width's accepted domain report the
-  deterministic `overflow` boundary instead of a time.
-- Unstable `ReductionWorkspace` reuses the Gram copy, transform, row scratch,
-  and exact factorization buffers across same-dimension reductions. Repeated
-  calls drop from nine allocations to exactly two (the returned matrices) and
-  improve repeated-call latency by up to 12.8%, with results bit-identical to
-  the one-shot functions and unchanged one-shot behavior.
-- Unstable benchmarking now profiles exact short-vector enumeration: node,
-  leaf, tail-term, and direct-norm counters over a named-lattice corpus whose
-  vector counts are checked against closed-form shell formulas before any
-  timing. The harness reports per-call allocations through its counting
-  allocator.
-- Exact enumeration amortizes each suffix dot product across a node's whole
-  sibling group instead of recomputing one per child. Tail terms drop by 23%
-  to 57% across the corpus with unchanged emitted vectors and counts.
-- Exact enumeration derives each emitted vector's norm from the accumulated
-  scaled partial sum — exactly `c G cᵀ · scale` at completion — instead of
-  recomputing the quadratic form. The enumeration corpus improves by 12% to
-  72%, with every carried norm checked against a direct `O(n²)` oracle in
-  tests.
-- Unstable benchmarking now profiles relevant-vector enumeration with
-  per-stage timings and coset-event counters over a named-lattice corpus
-  whose outputs are checked against published facet counts. New fixtures pin
-  the facet counts, opposite pairing, and lexicographic order of the public
-  result.
-- Relevant-vector coset minima now live in flat storage — one norm, an
-  arrival count capped past two, and two coordinate blocks per coset — so
-  the classification walk allocates nothing per vector. The corpus improves
-  by 5.9% to 24.2% while per-call allocations drop by three to four orders
-  of magnitude; ties beyond the second are proved irrelevant exactly as
-  before.
-- The exact twenty-four-by-twenty-four structure-of-arrays transform now
-  dispatches on x86 v3 hardware at every batch size through a fixed-geometry
-  kernel that keeps twelve output blocks in registers across the row loop.
-  Measured speedups never drop below 2.6x against the portable kernel at any
-  count from one vector upward, reaching 8.6x near the small end; output
-  stays bit-identical across lane boundaries, ragged tails, row-count
-  fallbacks, and backend overrides. Unstable `internals` exposes the portable
-  references and x86 kernels for differential tests and benchmarks.
-- The transform benchmark harness separates coordinate arithmetic from
-  array-of-structures conversion: a transpose-only group times layout work
-  alone and a pipeline group adds it to the fastest candidates, showing an
-  end-to-end AoS win of 2.2x to 2.5x including conversion cost.
+  the typed error.
 
 ## [0.2.1] - 2026-09-09
 

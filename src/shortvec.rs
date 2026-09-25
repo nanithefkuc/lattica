@@ -52,6 +52,7 @@ pub const DEFAULT_NODE_BUDGET: u64 = 1 << 28;
 /// vector and its negation are counted separately, matching the usual
 /// convention for the kissing number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Census<T: Int> {
     /// Smallest nonzero squared norm found, or `None` for the zero lattice.
     pub min_norm_sq: Option<T>,
