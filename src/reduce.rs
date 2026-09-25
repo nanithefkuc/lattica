@@ -95,6 +95,7 @@ impl Delta {
 /// provably the one that went in, checkable without knowing how the reduction
 /// ran.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Reduced<T: Int> {
     /// The reduced Gram matrix.
     pub gram: Gram<T>,

@@ -1,12 +1,12 @@
 [package]
 name = "lattica"
-version = "0.3.0"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.89"
 license = "MIT"
 description = "Shared arithmetic for point lattices, underneath lattice-based erasure codes"
 repository = "https://github.com/nanithefkuc/lattica"
-keywords = ["lattice", "quantization", "erasure-coding", "coding-theory"]
+keywords = ["lattice", "erasure-coding", "coding-theory"]
 categories = ["algorithms", "mathematics"]
 # The competitor harnesses under `external/` are repository-only tooling, not
 # crate targets: each is its own unpublished package, and this exclusion keeps

@@ -149,4 +149,4 @@ just validate    # complete gate, including coverage
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/nanithefkuc/lattica/blob/main/LICENSE).

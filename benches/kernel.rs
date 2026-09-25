@@ -63,7 +63,7 @@ mod dispatched {
         inputs: &[f64],
         outputs: &mut [f64],
     ) {
-        internals::transform_batch_soa_avx2_generic(token, matrix, 24, vectors, inputs, outputs);
+        internals::transform_batch_soa_avx2(token, matrix, 24, vectors, inputs, outputs);
     }
 
     /// Candidate kernels over the exact 24-by-24 shape, including the two

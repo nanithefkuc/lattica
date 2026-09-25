@@ -11,6 +11,7 @@ use crate::error::{RangeError, ReduceError};
 /// reference to how it was computed, which is why the transform is a product
 /// rather than an option.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Hnf<T: Int> {
     /// The reduced matrix in row Hermite Normal Form.
     pub h: IntMatrix<T>,

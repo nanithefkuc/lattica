@@ -1,8 +1,10 @@
 # Benchmarks
 
-Public API timings at source revision `87897cc`. Paired cells are
-**Core Ultra 7 258V / Core i7-12700K**. Aggregation varies by harness, as
-listed below.
+Public API timings. Paired cells are **Core Ultra 7 258V / Core i7-12700K**.
+Aggregation varies by harness, as listed below. The sixteen-output table spans
+the block-8 cutover: the plain dispatched column predates it and is superseded
+by the block-8 column beside it. Every other table was recorded with the
+`lattica` tree at `2b2cd01` on both hosts.
 
 ## Environment
 
@@ -13,7 +15,7 @@ listed below.
 
 | Setting | Value |
 | --- | --- |
-| Source | Same `lattica` tree on both hosts, `2b2cd01` |
+| Source | `lattica` at `2b2cd01` on both hosts, except the superseded sixteen-output column |
 | SIMD dependency | `simdispatch` resolved to the local working copy through the umbrella patch table; revision not recorded |
 | Kernel builds | `--features internals`; portable comparison adds `--no-default-features` |
 | Native compiler | GCC 16.2.1 on both hosts |
@@ -220,7 +222,7 @@ just bench-fplll
 | --- | --- | --- |
 | Criterion SoA and single-vector | Middle estimate, one run per host and feature set | 100 samples, 3 s warmup |
 | Criterion AoS | Mean, one run per host and feature set | 100 samples, 3 s warmup |
-| 24-by-24 SoA | Statistic not specified in the source record | - |
+| 24-by-24 SoA | Criterion group `real_transform_soa_24`; the extracted statistic was not recorded | - |
 | Custom algebra, reduction, enumeration | Median of 11 in-process samples | Deterministic inputs |
 | LLL comparison | Paired median of 5 interleaved rounds per side | 11 in-process samples per round; alternate first binary |
 
