@@ -15,8 +15,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   nothing; relevant-vector calls allocate strictly less than the one-shot,
   both covered by counting-allocator tests; a dimension mismatch is a
   `Shape` error.
-- `int::AdjugatePath`: the public adjugate's elimination path, reported by
-  the `internals`-only `int::adjugate_profiled` so benchmarks can tell the
+- `internals::int::AdjugatePath`: the adjugate's elimination path, reported by
+  `internals::int::adjugate_profiled` so benchmarks can tell the
   fraction-free elimination from the cofactor fallback. The public
   `adjugate` is unchanged.
 
@@ -31,6 +31,31 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
+- **Breaking:** unstable implementation APIs move behind the top-level
+  `internals` facade (`lattica::internals`), following the ecosystem's
+  visibility-only pattern. The scattered per-item gates are gone: the facade
+  declaration is the only `cfg(feature = "internals")` site and the
+  implementations compile unconditionally. Migrate imports:
+  `kernel::internals::*` to `internals::kernel::*`;
+  `reduce::{lll_profiled, lll_deep_profiled, ReductionWorkspace,
+  ReductionStats}` to `internals::reduce::*`;
+  `relevant::{RelevantScratch, RelevantStats, relevant_vectors_profiled}`
+  to `internals::relevant::*`;
+  `shortvec::{for_each_short_profiled, EnumerationStats, census_profiled,
+  EnumerationScratch}` to `internals::shortvec::*`;
+  `int::{adjugate_profiled, AdjugatePath}` to `internals::int::*`; and the
+  `Zq` composition laws (`add`, `sub`, `neg`, `mul`) to the
+  `internals::zq::ZqComposition` trait, whose methods are not `const`. The
+  `zero_alloc` integration test splits along the same boundary: stable
+  assertions stay in `tests/zero_alloc.rs` and the prepared-path assertions
+  move to `tests/zero_alloc_internals.rs`.
+- Competitor harnesses move to `external/`, one unpublished package per
+  harness outside `src/` and `benches/`. The fplll Rust CSV binary is now
+  `external/bench-fplll` (run with `just bench-fplll`) beside its matched
+  C++ source, and the FLINT Gram-LLL C++ source is `external/bench-flint`;
+  the crate's package exclusion keeps both out of `cargo package`. The
+  `fplll_compare` bench target is gone; `kernel` and `optimization` stay in
+  `benches/`.
 - `relevant_vectors` decomposes orthogonal direct sums: connected components
   of the Gram matrix's off-diagonal support are enumerated separately and
   embedded, charged against the one aggregate node budget, with the dimension

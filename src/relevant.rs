@@ -9,8 +9,6 @@ use crate::basis::Gram;
 use crate::error::{EnumerationError, RangeError};
 use crate::int::Int;
 use crate::shortvec::for_each_short;
-#[cfg(feature = "internals")]
-use std::time::Instant;
 
 /// Largest supported dimension for relevant-vector enumeration.
 ///
@@ -19,17 +17,15 @@ use std::time::Instant;
 /// dimensional oracle and facet work, not for high-dimensional decoding.
 pub const MAX_RELEVANT_DIM: usize = 16;
 
-/// Flat per-coset minima: one best norm, an arrival count capped past two,
+/// Flat per-coset minima: one best norm, an arrival count capped at three,
 /// and up to two coordinate blocks for the opposite-pair check.
 ///
 /// A coset is Voronoi-relevant exactly when its minimum is attained by
 /// precisely two vectors and they are negatives. Ties beyond two prove the
-/// coset irrelevant, so nothing past the second block is ever stored.
-///
-/// That capping relies on the walk's emission order: vectors arrive in
-/// ascending lexicographic order over `(c_{n-1}, …, c_0)`, and negation
-/// reverses it, so with four or more minima the first two arrivals are
-/// never opposite. A walk that reorders emissions must revisit this.
+/// coset irrelevant, so nothing past the second block is ever stored, while
+/// the count still records the third arrival. Four or more minima therefore
+/// report `3` however the walk orders arrivals, and the relevance decision
+/// never depends on emission order.
 struct CosetMinima {
     n: usize,
     cosets: usize,
@@ -59,9 +55,9 @@ impl CosetMinima {
     /// The buffers keep their capacity across calls; the caller sizes them
     /// for the whole lattice, so every component fits.
     ///
-    /// Only the reusable scratch calls this, so it exists behind
-    /// `internals` like the other scratch-only items.
-    #[cfg(feature = "internals")]
+    /// Only the reusable scratch calls this.
+    // Called only by the reusable scratch behind the `internals` facade.
+    #[allow(dead_code)]
     fn reset(&mut self, cosets: usize, n: usize) {
         self.n = n;
         self.cosets = cosets;
@@ -100,12 +96,16 @@ impl CosetMinima {
             }
             Some(current) if norm_sq == current => {
                 sink.tie();
+                // Count past two so a coset with four or more minima reports
+                // `3` however the walk orders arrivals; only the first two
+                // blocks are stored. `materialize_relevant` still selects on
+                // `== 2`, so the result no longer depends on emission order.
                 let count = self.counts[mask];
                 if count < 2 {
                     let slot = usize::try_from(count).unwrap_or(2);
                     self.block_mut(mask, slot).copy_from_slice(coordinates);
-                    self.counts[mask] = count + 1;
                 }
+                self.counts[mask] = count.saturating_add(1).min(3);
             }
             Some(_) => {}
         }
@@ -166,135 +166,277 @@ pub fn relevant_vectors<T: Int>(
     Ok(all)
 }
 
-/// Reusable relevant-vector buffers for one lattice dimension.
-///
-/// The scratch holds an [`EnumerationScratch`](crate::shortvec::EnumerationScratch)
-/// for the coset walks, the per-coset minima sized for the whole lattice,
-/// and the decomposition and probe buffers. Each call re-walks its Gram,
-/// so the scratch carries no lattice between calls — only the allocation.
-///
-/// A rejected call leaves the scratch reusable, though not untouched: the
-/// decomposition and probe buffers are rewritten before any fallible check
-/// past the dimension match, and a failed walk can leave coordinates behind.
-/// None of that state is observable — only [`dim`](Self::dim) is exposed —
-/// and no later call can read it: the minima are rewound on entry to every
-/// component walk, and every coordinates read follows a write on the
-/// current walk.
-///
-/// Available only with `internals`; not a compatibility promise.
-#[cfg(feature = "internals")]
-pub struct RelevantScratch<T: Int> {
-    dim: usize,
-    enumeration: crate::shortvec::EnumerationScratch,
-    minima: CosetMinima,
-    seen: Vec<bool>,
-    newly_seen: Vec<usize>,
-    components: Vec<Vec<usize>>,
-    gather: Vec<T>,
-    probe: Vec<T>,
-}
+/// Unstable relevant-vector surface: reusable buffers and benchmark counters.
+/// Reachable externally only through the `internals` facade.
+// Unstable items are reachable only through the `internals` facade, so the
+// library target without that feature reports them as unused.
+#[allow(dead_code)]
+pub(crate) mod unstable {
+    use super::{
+        CosetMinima, CosetSink, EnumerationError, Gram, Int, NoSink, RangeError, check_dimension,
+        collect_coset_minima_with, component_gram_into, materialize_relevant,
+        orthogonal_components_into, parity_mask, radius_for_parity_ball,
+        radius_for_parity_ball_into,
+    };
+    use std::time::Instant;
+    /// Reusable relevant-vector buffers for one lattice dimension.
+    ///
+    /// The scratch holds an [`EnumerationScratch`](crate::internals::shortvec::EnumerationScratch)
+    /// for the coset walks, the per-coset minima sized for the whole lattice,
+    /// and the decomposition and probe buffers. Each call re-walks its Gram,
+    /// so the scratch carries no lattice between calls — only the allocation.
+    ///
+    /// A rejected call leaves the scratch reusable, though not untouched: the
+    /// decomposition and probe buffers are rewritten before any fallible check
+    /// past the dimension match, and a failed walk can leave coordinates behind.
+    /// None of that state is observable — only [`dim`](Self::dim) is exposed —
+    /// and no later call can read it: the minima are rewound on entry to every
+    /// component walk, and every coordinates read follows a write on the
+    /// current walk.
+    ///
+    /// Reachable only through the `internals` facade; not a compatibility promise.
+    pub struct RelevantScratch<T: Int> {
+        dim: usize,
+        enumeration: crate::shortvec::unstable::EnumerationScratch,
+        minima: CosetMinima,
+        seen: Vec<bool>,
+        newly_seen: Vec<usize>,
+        components: Vec<Vec<usize>>,
+        gather: Vec<T>,
+        probe: Vec<T>,
+    }
 
-#[cfg(feature = "internals")]
-impl<T: Int> RelevantScratch<T> {
-    /// Allocates relevant-vector buffers for `dimension`.
+    impl<T: Int> RelevantScratch<T> {
+        /// Allocates relevant-vector buffers for `dimension`.
+        ///
+        /// # Errors
+        ///
+        /// [`RangeError::Dimension`] above [`MAX_RELEVANT_DIM`](super::MAX_RELEVANT_DIM).
+        pub fn new(dimension: usize) -> Result<Self, EnumerationError> {
+            check_dimension(dimension)?;
+            Ok(Self {
+                dim: dimension,
+                enumeration: crate::shortvec::unstable::EnumerationScratch::new(dimension)?,
+                minima: CosetMinima::new(1 << dimension, dimension),
+                seen: Vec::new(),
+                newly_seen: Vec::new(),
+                components: Vec::new(),
+                gather: Vec::new(),
+                probe: Vec::new(),
+            })
+        }
+
+        /// The dimension this scratch was sized for.
+        #[must_use]
+        pub const fn dim(&self) -> usize {
+            self.dim
+        }
+
+        /// Enumerates relevant vectors over reused buffers, identical to
+        /// [`relevant_vectors`](super::relevant_vectors) on the input.
+        ///
+        /// # Errors
+        ///
+        /// [`RangeError::Shape`] if `gram.dim()` does not equal
+        /// [`Self::dim`]; otherwise as [`relevant_vectors`](super::relevant_vectors).
+        pub fn relevant_vectors(
+            &mut self,
+            gram: &Gram<T>,
+            node_budget: u64,
+        ) -> Result<Vec<Vec<i128>>, EnumerationError> {
+            if gram.dim() != self.dim {
+                return Err(RangeError::Shape {
+                    expected: self.dim,
+                    found: gram.dim(),
+                }
+                .into());
+            }
+            let n = self.dim;
+            orthogonal_components_into(
+                gram,
+                &mut self.seen,
+                &mut self.newly_seen,
+                &mut self.components,
+            );
+            if self.components.len() <= 1 {
+                let (coset_count, radius_sq) = radius_for_parity_ball_into(gram, &mut self.probe)?;
+                if coset_count == 0 {
+                    return Ok(Vec::new());
+                }
+                self.minima.reset(coset_count, n);
+                let minima = &mut self.minima;
+                self.enumeration.for_each_prefix(
+                    gram,
+                    radius_sq,
+                    node_budget,
+                    |coordinates, norm_sq| {
+                        minima.offer(parity_mask(coordinates), coordinates, norm_sq, &mut NoSink);
+                    },
+                )?;
+                return Ok(materialize_relevant(&self.minima));
+            }
+            let mut remaining = node_budget;
+            let mut all = Vec::new();
+            for index in 0..self.components.len() {
+                let block = component_gram_into(gram, &self.components[index], &mut self.gather);
+                let k = block.dim();
+                let (coset_count, radius_sq) =
+                    radius_for_parity_ball_into(&block, &mut self.probe)?;
+                if coset_count == 0 {
+                    continue;
+                }
+                self.minima.reset(coset_count, k);
+                let minima = &mut self.minima;
+                let nodes = self.enumeration.for_each_prefix(
+                    &block,
+                    radius_sq,
+                    remaining,
+                    |coordinates, norm_sq| {
+                        minima.offer(parity_mask(coordinates), coordinates, norm_sq, &mut NoSink);
+                    },
+                )?;
+                remaining -= nodes;
+                let vectors = materialize_relevant(&self.minima);
+                for vector in vectors {
+                    let mut embedded = vec![0i128; n];
+                    for (position, &coordinate) in self.components[index].iter().enumerate() {
+                        embedded[coordinate] = vector[position];
+                    }
+                    all.push(embedded);
+                }
+            }
+            all.sort_unstable();
+            Ok(all)
+        }
+    }
+    /// Unstable benchmark counters and stage timings for relevant-vector
+    /// enumeration.
+    ///
+    /// Reachable only through the `internals` facade; not a compatibility promise. The
+    /// enumerated result matches [`relevant_vectors`](super::relevant_vectors) exactly.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct RelevantStats {
+        /// Parity-coset representatives evaluated for the radius.
+        pub masks: u64,
+        /// Short vectors seen by the coset pass.
+        pub emissions: u64,
+        /// Strictly-better coset minima replaced.
+        pub coset_resets: u64,
+        /// Equal-minimum vectors stored beyond the first.
+        pub ties_stored: u64,
+        /// Voronoi-relevant vectors materialized.
+        pub output_len: u64,
+        /// Nanoseconds forming the radius over the parity representatives.
+        pub setup_ns: u64,
+        /// Nanoseconds enumerating and classifying short vectors.
+        pub walk_ns: u64,
+        /// Nanoseconds collecting opposite pairs and sorting.
+        pub finalize_ns: u64,
+    }
+    #[derive(Default)]
+    struct CountingSink {
+        emissions: u64,
+        resets: u64,
+        ties: u64,
+    }
+
+    impl CosetSink for CountingSink {
+        fn emission(&mut self) {
+            self.emissions += 1;
+        }
+
+        fn reset(&mut self) {
+            self.resets += 1;
+        }
+
+        fn tie(&mut self) {
+            self.ties += 1;
+        }
+    }
+    /// Enumerates relevant vectors while returning unstable benchmark counters
+    /// and stage timings.
     ///
     /// # Errors
     ///
-    /// [`RangeError::Dimension`] above [`MAX_RELEVANT_DIM`].
-    pub fn new(dimension: usize) -> Result<Self, EnumerationError> {
-        check_dimension(dimension)?;
-        Ok(Self {
-            dim: dimension,
-            enumeration: crate::shortvec::EnumerationScratch::new(dimension)?,
-            minima: CosetMinima::new(1 << dimension, dimension),
-            seen: Vec::new(),
-            newly_seen: Vec::new(),
-            components: Vec::new(),
-            gather: Vec::new(),
-            probe: Vec::new(),
-        })
-    }
-
-    /// The dimension this scratch was sized for.
-    #[must_use]
-    pub const fn dim(&self) -> usize {
-        self.dim
-    }
-
-    /// Enumerates relevant vectors over reused buffers, identical to
-    /// [`relevant_vectors`] on the input.
-    ///
-    /// # Errors
-    ///
-    /// [`RangeError::Shape`] if `gram.dim()` does not equal
-    /// [`Self::dim`]; otherwise as [`relevant_vectors`].
-    pub fn relevant_vectors(
-        &mut self,
+    /// As [`relevant_vectors`](super::relevant_vectors).
+    pub fn relevant_vectors_profiled<T: Int>(
         gram: &Gram<T>,
         node_budget: u64,
-    ) -> Result<Vec<Vec<i128>>, EnumerationError> {
-        if gram.dim() != self.dim {
-            return Err(RangeError::Shape {
-                expected: self.dim,
-                found: gram.dim(),
-            }
-            .into());
+    ) -> Result<(Vec<Vec<i128>>, RelevantStats), EnumerationError> {
+        check_dimension(gram.dim())?;
+        let mut seen = Vec::new();
+        let mut newly_seen = Vec::new();
+        let mut components = Vec::new();
+        orthogonal_components_into(gram, &mut seen, &mut newly_seen, &mut components);
+        if components.len() <= 1 {
+            let (vectors, stats, _nodes) = relevant_connected_profiled(gram, node_budget)?;
+            return Ok((vectors, stats));
         }
-        let n = self.dim;
-        orthogonal_components_into(
-            gram,
-            &mut self.seen,
-            &mut self.newly_seen,
-            &mut self.components,
-        );
-        if self.components.len() <= 1 {
-            let (coset_count, radius_sq) = radius_for_parity_ball_into(gram, &mut self.probe)?;
-            if coset_count == 0 {
-                return Ok(Vec::new());
-            }
-            self.minima.reset(coset_count, n);
-            let minima = &mut self.minima;
-            self.enumeration.for_each_prefix(
-                gram,
-                radius_sq,
-                node_budget,
-                |coordinates, norm_sq| {
-                    minima.offer(parity_mask(coordinates), coordinates, norm_sq, &mut NoSink);
-                },
-            )?;
-            return Ok(materialize_relevant(&self.minima));
-        }
+
+        // Same decomposition as `relevant_vectors`, with each component's
+        // counters summed so the profiled totals describe the whole call.
+        let dimension = gram.dim();
         let mut remaining = node_budget;
+        let mut total = RelevantStats::default();
+        let mut gather = Vec::new();
         let mut all = Vec::new();
-        for index in 0..self.components.len() {
-            let block = component_gram_into(gram, &self.components[index], &mut self.gather);
-            let k = block.dim();
-            let (coset_count, radius_sq) = radius_for_parity_ball_into(&block, &mut self.probe)?;
-            if coset_count == 0 {
-                continue;
-            }
-            self.minima.reset(coset_count, k);
-            let minima = &mut self.minima;
-            let nodes = self.enumeration.for_each_prefix(
-                &block,
-                radius_sq,
-                remaining,
-                |coordinates, norm_sq| {
-                    minima.offer(parity_mask(coordinates), coordinates, norm_sq, &mut NoSink);
-                },
-            )?;
+        for component in &components {
+            let block = component_gram_into(gram, component, &mut gather);
+            let (vectors, stats, nodes) = relevant_connected_profiled(&block, remaining)?;
             remaining -= nodes;
-            let vectors = materialize_relevant(&self.minima);
+            total.setup_ns = total.setup_ns.saturating_add(stats.setup_ns);
+            total.walk_ns = total.walk_ns.saturating_add(stats.walk_ns);
+            total.finalize_ns = total.finalize_ns.saturating_add(stats.finalize_ns);
+            total.masks = total.masks.saturating_add(stats.masks);
+            total.emissions = total.emissions.saturating_add(stats.emissions);
+            total.coset_resets = total.coset_resets.saturating_add(stats.coset_resets);
+            total.ties_stored = total.ties_stored.saturating_add(stats.ties_stored);
             for vector in vectors {
-                let mut embedded = vec![0i128; n];
-                for (position, &coordinate) in self.components[index].iter().enumerate() {
-                    embedded[coordinate] = vector[position];
+                let mut embedded = vec![0i128; dimension];
+                for (position, &index) in component.iter().enumerate() {
+                    embedded[index] = vector[position];
                 }
                 all.push(embedded);
             }
         }
+        let finalize_start = Instant::now();
         all.sort_unstable();
-        Ok(all)
+        total.finalize_ns = total
+            .finalize_ns
+            .saturating_add(u64::try_from(finalize_start.elapsed().as_nanos()).unwrap_or(u64::MAX));
+        total.output_len = u64::try_from(all.len()).unwrap_or(u64::MAX);
+        Ok((all, total))
+    }
+    /// The profiled connected case: the original single-walk stage split, plus
+    /// the walk's node count so the decomposed path can charge one budget.
+    fn relevant_connected_profiled<T: Int>(
+        gram: &Gram<T>,
+        node_budget: u64,
+    ) -> Result<(Vec<Vec<i128>>, RelevantStats, u64), EnumerationError> {
+        let mut stats = RelevantStats::default();
+        let setup_start = Instant::now();
+        let (coset_count, radius_sq) = radius_for_parity_ball(gram)?;
+        stats.setup_ns = u64::try_from(setup_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        stats.masks = u64::try_from(coset_count.saturating_sub(1)).unwrap_or(u64::MAX);
+        if coset_count == 0 {
+            return Ok((Vec::new(), stats, 0));
+        }
+
+        let mut minima = CosetMinima::new(coset_count, gram.dim());
+        let mut sink = CountingSink::default();
+        let walk_start = Instant::now();
+        let nodes =
+            collect_coset_minima_with(gram, radius_sq, node_budget, &mut minima, &mut sink)?;
+        stats.walk_ns = u64::try_from(walk_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        stats.emissions = sink.emissions;
+        stats.coset_resets = sink.resets;
+        stats.ties_stored = sink.ties;
+
+        let finalize_start = Instant::now();
+        let relevant = materialize_relevant(&minima);
+        stats.finalize_ns = u64::try_from(finalize_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        stats.output_len = u64::try_from(relevant.len()).unwrap_or(u64::MAX);
+        Ok((relevant, stats, nodes))
     }
 }
 
@@ -422,7 +564,7 @@ fn radius_for_parity_ball_into<T: Int>(
                 T::ONE
             };
         }
-        radius_sq = radius_sq.max(gram.norm_sq(representative)?.widen());
+        radius_sq = radius_sq.max(gram.norm_sq_wide(representative)?);
     }
     Ok((coset_count, radius_sq))
 }
@@ -461,32 +603,6 @@ fn materialize_relevant(minima: &CosetMinima) -> Vec<Vec<i128>> {
     relevant
 }
 
-/// Unstable benchmark counters and stage timings for relevant-vector
-/// enumeration.
-///
-/// Available only with `internals`; not a compatibility promise. The
-/// enumerated result matches [`relevant_vectors`] exactly.
-#[cfg(feature = "internals")]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct RelevantStats {
-    /// Parity-coset representatives evaluated for the radius.
-    pub masks: u64,
-    /// Short vectors seen by the coset pass.
-    pub emissions: u64,
-    /// Strictly-better coset minima replaced.
-    pub coset_resets: u64,
-    /// Equal-minimum vectors stored beyond the first.
-    pub ties_stored: u64,
-    /// Voronoi-relevant vectors materialized.
-    pub output_len: u64,
-    /// Nanoseconds forming the radius over the parity representatives.
-    pub setup_ns: u64,
-    /// Nanoseconds enumerating and classifying short vectors.
-    pub walk_ns: u64,
-    /// Nanoseconds collecting opposite pairs and sorting.
-    pub finalize_ns: u64,
-}
-
 /// Sink receiving the classification events of the coset pass.
 trait CosetSink {
     fn emission(&mut self) {}
@@ -497,117 +613,6 @@ trait CosetSink {
 struct NoSink;
 
 impl CosetSink for NoSink {}
-
-#[cfg(feature = "internals")]
-#[derive(Default)]
-struct CountingSink {
-    emissions: u64,
-    resets: u64,
-    ties: u64,
-}
-
-#[cfg(feature = "internals")]
-impl CosetSink for CountingSink {
-    fn emission(&mut self) {
-        self.emissions += 1;
-    }
-
-    fn reset(&mut self) {
-        self.resets += 1;
-    }
-
-    fn tie(&mut self) {
-        self.ties += 1;
-    }
-}
-
-/// Enumerates relevant vectors while returning unstable benchmark counters
-/// and stage timings.
-///
-/// # Errors
-///
-/// As [`relevant_vectors`].
-#[cfg(feature = "internals")]
-pub fn relevant_vectors_profiled<T: Int>(
-    gram: &Gram<T>,
-    node_budget: u64,
-) -> Result<(Vec<Vec<i128>>, RelevantStats), EnumerationError> {
-    check_dimension(gram.dim())?;
-    let mut seen = Vec::new();
-    let mut newly_seen = Vec::new();
-    let mut components = Vec::new();
-    orthogonal_components_into(gram, &mut seen, &mut newly_seen, &mut components);
-    if components.len() <= 1 {
-        let (vectors, stats, _nodes) = relevant_connected_profiled(gram, node_budget)?;
-        return Ok((vectors, stats));
-    }
-
-    // Same decomposition as `relevant_vectors`, with each component's
-    // counters summed so the profiled totals describe the whole call.
-    let dimension = gram.dim();
-    let mut remaining = node_budget;
-    let mut total = RelevantStats::default();
-    let mut gather = Vec::new();
-    let mut all = Vec::new();
-    for component in &components {
-        let block = component_gram_into(gram, component, &mut gather);
-        let (vectors, stats, nodes) = relevant_connected_profiled(&block, remaining)?;
-        remaining -= nodes;
-        total.setup_ns = total.setup_ns.saturating_add(stats.setup_ns);
-        total.walk_ns = total.walk_ns.saturating_add(stats.walk_ns);
-        total.finalize_ns = total.finalize_ns.saturating_add(stats.finalize_ns);
-        total.masks = total.masks.saturating_add(stats.masks);
-        total.emissions = total.emissions.saturating_add(stats.emissions);
-        total.coset_resets = total.coset_resets.saturating_add(stats.coset_resets);
-        total.ties_stored = total.ties_stored.saturating_add(stats.ties_stored);
-        for vector in vectors {
-            let mut embedded = vec![0i128; dimension];
-            for (position, &index) in component.iter().enumerate() {
-                embedded[index] = vector[position];
-            }
-            all.push(embedded);
-        }
-    }
-    let finalize_start = Instant::now();
-    all.sort_unstable();
-    total.finalize_ns = total
-        .finalize_ns
-        .saturating_add(u64::try_from(finalize_start.elapsed().as_nanos()).unwrap_or(u64::MAX));
-    total.output_len = u64::try_from(all.len()).unwrap_or(u64::MAX);
-    Ok((all, total))
-}
-
-/// The profiled connected case: the original single-walk stage split, plus
-/// the walk's node count so the decomposed path can charge one budget.
-#[cfg(feature = "internals")]
-fn relevant_connected_profiled<T: Int>(
-    gram: &Gram<T>,
-    node_budget: u64,
-) -> Result<(Vec<Vec<i128>>, RelevantStats, u64), EnumerationError> {
-    let mut stats = RelevantStats::default();
-    let setup_start = Instant::now();
-    let (coset_count, radius_sq) = radius_for_parity_ball(gram)?;
-    stats.setup_ns = u64::try_from(setup_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
-    stats.masks = u64::try_from(coset_count.saturating_sub(1)).unwrap_or(u64::MAX);
-    if coset_count == 0 {
-        return Ok((Vec::new(), stats, 0));
-    }
-
-    let mut minima = CosetMinima::new(coset_count, gram.dim());
-    let mut sink = CountingSink::default();
-    let walk_start = Instant::now();
-    let nodes = collect_coset_minima_with(gram, radius_sq, node_budget, &mut minima, &mut sink)?;
-    stats.walk_ns = u64::try_from(walk_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
-    stats.emissions = sink.emissions;
-    stats.coset_resets = sink.resets;
-    stats.ties_stored = sink.ties;
-
-    let finalize_start = Instant::now();
-    let relevant = materialize_relevant(&minima);
-    stats.finalize_ns = u64::try_from(finalize_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
-    stats.output_len = u64::try_from(relevant.len()).unwrap_or(u64::MAX);
-    Ok((relevant, stats, nodes))
-}
 
 fn parity_mask(coordinates: &[i128]) -> usize {
     coordinates
@@ -638,12 +643,10 @@ fn check_dimension(n: usize) -> Result<(), EnumerationError> {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "internals")]
-    use super::relevant_vectors_profiled;
+    use super::unstable::relevant_vectors_profiled;
     use super::{MAX_RELEVANT_DIM, relevant_vectors};
     use crate::basis::Gram;
     use crate::error::EnumerationError;
-    #[cfg(feature = "internals")]
     use crate::error::RangeError;
     use crate::named::{a_n, d_n, e8, zn};
     use crate::shortvec::DEFAULT_NODE_BUDGET;
@@ -655,17 +658,42 @@ mod tests {
             relevant_vectors(&empty, 1 << 8).unwrap(),
             Vec::<Vec<i128>>::new()
         );
-        #[cfg(feature = "internals")]
-        {
-            let (v, stats) = relevant_vectors_profiled(&empty, 1 << 8).unwrap();
-            assert!(v.is_empty());
-            assert_eq!(stats.masks, 0);
+        let (v, stats) = relevant_vectors_profiled(&empty, 1 << 8).unwrap();
+        assert!(v.is_empty());
+        assert_eq!(stats.masks, 0);
+    }
+
+    /// Four minima in one coset stay irrelevant however they arrive: the
+    /// opposite-first order used to fill both blocks and report relevant.
+    #[test]
+    fn four_minima_stay_irrelevant_in_any_arrival_order() {
+        use super::{CosetMinima, NoSink, materialize_relevant, parity_mask};
+        let (a, b) = ([1i128, 1], [1i128, -1]);
+        let (neg_a, neg_b) = ([-1i128, -1], [-1i128, 1]);
+        assert_eq!(parity_mask(&a), parity_mask(&b));
+        for order in [
+            [a, neg_a, b, neg_b],
+            [neg_b, b, neg_a, a],
+            [a, b, neg_a, neg_b],
+        ] {
+            let mut minima = CosetMinima::new(4, 2);
+            let mut sink = NoSink;
+            for v in order {
+                minima.offer(parity_mask(&v), &v, 2, &mut sink);
+            }
+            let out = materialize_relevant(&minima);
+            assert!(!out.contains(&a.to_vec()), "order {order:?}");
         }
+        let mut minima = CosetMinima::new(4, 2);
+        let mut sink = NoSink;
+        minima.offer(parity_mask(&a), &a, 2, &mut sink);
+        minima.offer(parity_mask(&neg_a), &neg_a, 2, &mut sink);
+        let out = materialize_relevant(&minima);
+        assert_eq!(out, vec![neg_a.to_vec(), a.to_vec()]);
     }
 
     /// The profiled path returns the same vectors as the public one, with
     /// counters that partition the walk.
-    #[cfg(feature = "internals")]
     #[test]
     fn profiled_counters_match_the_public_path() {
         let g = d_n::<i64>(6).unwrap();
@@ -793,10 +821,9 @@ mod tests {
 
     /// The reusable scratch returns the one-shot's vectors twice in a row
     /// over the same buffers, on connected and decomposed lattices alike.
-    #[cfg(feature = "internals")]
     #[test]
     fn scratch_matches_the_one_shot() {
-        use super::RelevantScratch;
+        use super::unstable::RelevantScratch;
         use crate::named::{a_n, d_n, e8, zn};
         for gram in [
             zn::<i64>(4).unwrap(),

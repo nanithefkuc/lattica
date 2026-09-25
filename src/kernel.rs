@@ -14,7 +14,7 @@
 use crate::error::RangeError;
 
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
-mod x86;
+pub(crate) mod x86;
 
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 use simdispatch::{Backend, Selection};
@@ -53,7 +53,7 @@ pub fn transform(
             found: out.len(),
         });
     }
-    transform_scalar(matrix, cols, input, out);
+    portable::transform_scalar(matrix, cols, input, out);
     Ok(())
 }
 
@@ -113,7 +113,7 @@ pub fn transform_batch(
             return Ok(());
         }
     }
-    transform_batch_scalar(matrix, rows, cols, inputs, outputs);
+    portable::transform_batch_scalar(matrix, rows, cols, inputs, outputs);
     Ok(())
 }
 
@@ -123,7 +123,7 @@ pub fn transform_batch(
 /// Each run is packed plane-major into stack scratch sized for `CHUNK`
 /// vectors, dispatched with the run's own lane count, and unpacked. Lanes are
 /// independent vectors, so packing changes no arithmetic: the result is
-/// bit-identical to [`transform_batch_scalar`] at every batch size, ragged
+/// bit-identical to [`portable::transform_batch_scalar`] at every batch size, ragged
 /// tails included. The stack scratch keeps the steady state allocation-free.
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 fn dispatch_aos_24(
@@ -168,9 +168,9 @@ fn dispatch_aos_24(
 /// accumulates rows in scalar order. The result is therefore bit-identical to
 /// the portable reference across lane boundaries and ragged tails.
 ///
-/// On x86 v3 hardware two shapes dispatch: sixteen outputs at sixty-four
-/// vectors or more, and the exact twenty-four-by-twenty-four geometry at any
-/// batch size. Everything else uses the portable kernel.
+/// On x86 v3 hardware two shapes dispatch: sixteen columns at any batch size
+/// through the fixed block-8 kernel, and the exact twenty-four-by-twenty-four
+/// geometry at any batch size. Everything else uses the portable kernel.
 ///
 /// # Errors
 ///
@@ -219,11 +219,10 @@ pub fn transform_batch_soa(
         // only materializes archmage's safe capability token for the tier
         // already selected; it never chooses or upgrades a backend.
         let token = archmage::X64V3Token::summon();
-        if vectors >= 64
-            && cols == 16
+        if cols == 16
             && let Some(token) = token
         {
-            x86::transform_batch_soa_avx2(token, matrix, cols, vectors, inputs, outputs);
+            x86::transform_batch_soa_fixed_16_block8(token, matrix, rows, vectors, inputs, outputs);
             return Ok(());
         }
         if rows == 24
@@ -235,7 +234,7 @@ pub fn transform_batch_soa(
         }
     }
 
-    transform_batch_soa_scalar(matrix, cols, vectors, inputs, outputs);
+    portable::transform_batch_soa_scalar(matrix, cols, vectors, inputs, outputs);
     Ok(())
 }
 
@@ -270,60 +269,23 @@ fn backend() -> Backend {
     *BACKEND
 }
 
-fn transform_scalar(matrix: &[f64], cols: usize, input: &[f64], out: &mut [f64]) {
-    out.fill(0.0);
-    for (row, &value) in input.iter().enumerate() {
-        let coefficients = &matrix[row * cols..(row + 1) * cols];
-        for (slot, &coefficient) in out.iter_mut().zip(coefficients) {
-            *slot += value * coefficient;
-        }
-    }
-}
-
-fn transform_batch_scalar(
-    matrix: &[f64],
-    rows: usize,
-    cols: usize,
-    inputs: &[f64],
-    outputs: &mut [f64],
-) {
-    for (input, out) in inputs
-        .chunks_exact(rows)
-        .zip(outputs.chunks_exact_mut(cols))
-    {
-        transform_scalar(matrix, cols, input, out);
-    }
-}
-
-fn transform_batch_soa_scalar(
-    matrix: &[f64],
-    cols: usize,
-    vectors: usize,
-    inputs: &[f64],
-    outputs: &mut [f64],
-) {
-    if vectors == 0 {
-        // Every output plane is empty; zero-length chunking is undefined.
-        return;
-    }
-    for column in 0..cols {
-        let out = &mut outputs[column * vectors..(column + 1) * vectors];
-        out.fill(0.0);
-        for (row, input) in inputs.chunks_exact(vectors).enumerate() {
-            let coefficient = matrix[row * cols + column];
-            for (slot, &value) in out.iter_mut().zip(input) {
-                *slot += coefficient * value;
-            }
-        }
-    }
-}
-
-/// Unstable implementation access for differential tests and benchmarks.
-#[cfg(feature = "internals")]
-pub mod internals {
+/// Portable scalar references for the dispatched transforms.
+///
+/// The single-vector and batch kernels here are the bit-identity oracles:
+/// every dispatched path performs the same operations in the same order.
+/// Identity holds bit-for-bit on non-NaN results; NaN payloads are
+/// unspecified by Rust/LLVM when both operands are NaN.
+/// Reachable externally only through the `internals` facade.
+pub(crate) mod portable {
     /// Portable scalar reference for [`super::transform`].
     pub fn transform_scalar(matrix: &[f64], cols: usize, input: &[f64], out: &mut [f64]) {
-        super::transform_scalar(matrix, cols, input, out);
+        out.fill(0.0);
+        for (row, &value) in input.iter().enumerate() {
+            let coefficients = &matrix[row * cols..(row + 1) * cols];
+            for (slot, &coefficient) in out.iter_mut().zip(coefficients) {
+                *slot += value * coefficient;
+            }
+        }
     }
 
     /// Portable scalar reference for [`super::transform_batch`].
@@ -334,7 +296,12 @@ pub mod internals {
         inputs: &[f64],
         outputs: &mut [f64],
     ) {
-        super::transform_batch_scalar(matrix, rows, cols, inputs, outputs);
+        for (input, out) in inputs
+            .chunks_exact(rows)
+            .zip(outputs.chunks_exact_mut(cols))
+        {
+            transform_scalar(matrix, cols, input, out);
+        }
     }
 
     /// Portable scalar reference for [`super::transform_batch_soa`].
@@ -345,19 +312,21 @@ pub mod internals {
         inputs: &[f64],
         outputs: &mut [f64],
     ) {
-        super::transform_batch_soa_scalar(matrix, cols, vectors, inputs, outputs);
+        if vectors == 0 {
+            // Every output plane is empty; zero-length chunking is undefined.
+            return;
+        }
+        for column in 0..cols {
+            let out = &mut outputs[column * vectors..(column + 1) * vectors];
+            out.fill(0.0);
+            for (row, input) in inputs.chunks_exact(vectors).enumerate() {
+                let coefficient = matrix[row * cols + column];
+                for (slot, &value) in out.iter_mut().zip(input) {
+                    *slot += coefficient * value;
+                }
+            }
+        }
     }
-
-    /// Dispatched x86 kernel for arbitrary geometries, exposed so benchmarks
-    /// can time shapes that the public gate does not select.
-    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
-    pub use super::x86::transform_batch_soa_avx2 as transform_batch_soa_avx2_generic;
-
-    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
-    pub use super::x86::{
-        transform_batch_soa_fixed_24_block6, transform_batch_soa_fixed_24_block8,
-        transform_batch_soa_fixed_24_block12,
-    };
 }
 
 #[cfg(test)]
@@ -367,10 +336,8 @@ pub mod internals {
     clippy::float_cmp
 )]
 mod tests {
-    use super::{
-        transform, transform_batch, transform_batch_scalar, transform_batch_soa,
-        transform_batch_soa_scalar, transform_scalar,
-    };
+    use super::portable::{transform_batch_scalar, transform_batch_soa_scalar, transform_scalar};
+    use super::{transform, transform_batch, transform_batch_soa};
 
     #[test]
     fn dispatched_transform_is_bit_identical_across_boundaries() {
@@ -491,10 +458,10 @@ mod tests {
         }
     }
 
-    #[cfg(all(feature = "simd", feature = "internals", target_arch = "x86_64"))]
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     mod fixed_24 {
-        use super::transform_batch_soa_scalar;
-        use crate::kernel::internals::{
+        use super::super::portable::transform_batch_soa_scalar;
+        use super::super::x86::{
             transform_batch_soa_fixed_24_block6, transform_batch_soa_fixed_24_block8,
             transform_batch_soa_fixed_24_block12,
         };
@@ -514,7 +481,12 @@ mod tests {
 
         #[test]
         fn fixed_kernels_are_bit_identical_across_lane_boundaries() {
-            let token = X64V3Token::summon().expect("this host dispatches x86 v3");
+            // The kernels need v3 codegen; a host without it (or a forced
+            // scalar tier) exercises the portable path instead, which the
+            // routing tests cover.
+            let Some(token) = X64V3Token::summon() else {
+                return;
+            };
             for vectors in (1..=17).chain([31, 63, 64, 65, 127, 128, 129, 257]) {
                 let matrix = matrix();
                 let inputs = inputs(vectors);
@@ -529,6 +501,98 @@ mod tests {
                 got.fill(0.0);
                 transform_batch_soa_fixed_24_block8(token, &matrix, vectors, &inputs, &mut got);
                 assert_eq!(got, want, "block8, {vectors} vectors");
+            }
+        }
+
+        /// NaN payloads are unspecified by Rust/LLVM, so the bit-identity
+        /// claim covers only non-NaN results; this compares NaN inputs after
+        /// canonicalizing every NaN, proving the paths agree elsewhere.
+        #[test]
+        fn fixed_kernels_agree_on_nan_inputs_up_to_payload() {
+            use core::cmp::Ordering;
+            let Some(token) = X64V3Token::summon() else {
+                return;
+            };
+            let canonicalize = |values: &mut [f64]| {
+                for value in values.iter_mut() {
+                    if value.is_nan() {
+                        *value = f64::NAN;
+                    }
+                }
+            };
+            let matrix = matrix();
+            let mut inputs = inputs(65);
+            inputs[0] = f64::NAN;
+            inputs[64] = -f64::NAN;
+            inputs[24 * 64 + 23] = f64::NAN;
+            let mut want = vec![0.0; 24 * 65];
+            transform_batch_soa_scalar(&matrix, 24, 65, &inputs, &mut want);
+            let mut got = vec![0.0; 24 * 65];
+            transform_batch_soa_fixed_24_block12(token, &matrix, 65, &inputs, &mut got);
+            canonicalize(&mut want);
+            canonicalize(&mut got);
+            assert!(
+                got.iter()
+                    .zip(want.iter())
+                    .all(|(g, w)| g.total_cmp(w) == Ordering::Equal),
+                "block12 with NaN inputs"
+            );
+        }
+    }
+
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    mod fixed_16 {
+        use super::super::portable::transform_batch_soa_scalar;
+        use super::super::transform_batch_soa;
+        use super::super::x86::transform_batch_soa_fixed_16_block8;
+        use archmage::{SimdToken, X64V3Token};
+
+        fn matrix(rows: usize) -> Vec<f64> {
+            (0..rows * 16)
+                .map(|i| (f64::from(i as u32) - 127.0) / 64.0)
+                .collect()
+        }
+
+        fn inputs(rows: usize, vectors: usize) -> Vec<f64> {
+            (0..rows * vectors)
+                .map(|i| (f64::from(i as u32 % 251) - 125.0) / 16.0)
+                .collect()
+        }
+
+        #[test]
+        fn fixed_16_is_bit_identical_across_lane_boundaries() {
+            let Some(token) = X64V3Token::summon() else {
+                return;
+            };
+            for rows in [1usize, 15, 16, 23, 24] {
+                for vectors in (0..=17).chain([31, 63, 64, 65, 127, 128, 129, 257]) {
+                    let matrix = matrix(rows);
+                    let inputs = inputs(rows, vectors);
+                    let mut want = vec![0.0; 16 * vectors];
+                    transform_batch_soa_scalar(&matrix, 16, vectors, &inputs, &mut want);
+                    let mut got = vec![0.0; 16 * vectors];
+                    transform_batch_soa_fixed_16_block8(
+                        token, &matrix, rows, vectors, &inputs, &mut got,
+                    );
+                    assert_eq!(got, want, "{rows} rows, {vectors} vectors");
+                }
+            }
+        }
+
+        /// Sixteen columns dispatch at every batch size, including below the
+        /// old sixty-four-vector gate.
+        #[test]
+        fn sixteen_columns_dispatch_without_a_batch_threshold() {
+            for rows in [1usize, 16, 24] {
+                for vectors in [1usize, 4, 8, 63, 64, 65] {
+                    let matrix = matrix(rows);
+                    let inputs = inputs(rows, vectors);
+                    let mut want = vec![0.0; 16 * vectors];
+                    transform_batch_soa_scalar(&matrix, 16, vectors, &inputs, &mut want);
+                    let mut got = vec![0.0; 16 * vectors];
+                    transform_batch_soa(&matrix, rows, 16, vectors, &inputs, &mut got).unwrap();
+                    assert_eq!(got, want, "{rows} rows, {vectors} vectors");
+                }
             }
         }
     }

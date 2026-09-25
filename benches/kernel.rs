@@ -9,7 +9,8 @@
 //! position.
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use lattica::kernel::{internals, transform, transform_batch, transform_batch_soa};
+use lattica::internals::kernel as internals;
+use lattica::kernel::{transform, transform_batch, transform_batch_soa};
 use std::hint::black_box;
 
 /// Transposes an array-of-structures batch into structure-of-arrays planes.
@@ -46,7 +47,7 @@ fn elements(rows: usize, vectors: usize) -> u64 {
 
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 mod dispatched {
-    use lattica::kernel::internals;
+    use lattica::internals::kernel as internals;
 
     pub type Kernel = fn(archmage::X64V3Token, &[f64], usize, &[f64], &mut [f64]);
 

@@ -81,6 +81,9 @@ pub mod relevant;
 pub mod shortvec;
 pub mod zq;
 
+#[cfg(feature = "internals")]
+pub mod internals;
+
 pub use basis::{Basis, Gram};
 pub use error::{EnumerationError, LatticeError, Op, RangeError, ReduceError};
 pub use int::Int;

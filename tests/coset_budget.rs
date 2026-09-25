@@ -49,8 +49,11 @@ fn an_exhausted_allocator_is_the_documented_error() {
     let pair = Nested::new(zn(2).unwrap(), transform).unwrap();
     assert_eq!(pair.index(), 4);
 
-    // Deny every allocation, including the first fallible reservation.
-    BUDGET.store(0, Ordering::Relaxed);
+    // Deny the fallible reservations and every row allocation. A single
+    // admitted byte keeps the harness's own bookkeeping allocations alive;
+    // denying allocation outright lets a harness thread race the restore and
+    // abort instead of producing the documented error.
+    BUDGET.store(1, Ordering::Relaxed);
     let result = pair.coset_representatives();
     BUDGET.store(usize::MAX, Ordering::Relaxed);
 

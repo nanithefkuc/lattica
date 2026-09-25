@@ -10,18 +10,16 @@ use std::time::{Duration, Instant};
 use lattica::Basis;
 use lattica::basis::Gram;
 use lattica::gso::Gso;
-use lattica::int::{
-    AdjugatePath, Int, IntMatrix, adjugate, adjugate_profiled, hnf, hnf_mod_det, invariant_factors,
+use lattica::int::{Int, IntMatrix, adjugate, hnf, hnf_mod_det, invariant_factors};
+use lattica::internals::int::{AdjugatePath, adjugate_profiled};
+use lattica::internals::reduce::{
+    ReductionStats, ReductionWorkspace, lll_deep_profiled, lll_profiled,
 };
+use lattica::internals::relevant::{RelevantScratch, relevant_vectors_profiled};
+use lattica::internals::shortvec::{EnumerationScratch, for_each_short_profiled};
 use lattica::named::{a_n, d_n, e8, zn};
-use lattica::reduce::{
-    Delta, Reduced, ReductionStats, ReductionWorkspace, is_reduced, lll, lll_deep,
-    lll_deep_profiled, lll_profiled,
-};
-use lattica::relevant::{RelevantScratch, relevant_vectors_profiled};
-use lattica::shortvec::{
-    DEFAULT_NODE_BUDGET, EnumerationScratch, for_each_short, for_each_short_profiled,
-};
+use lattica::reduce::{Delta, Reduced, is_reduced, lll, lll_deep};
+use lattica::shortvec::{DEFAULT_NODE_BUDGET, for_each_short};
 
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 

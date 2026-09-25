@@ -122,9 +122,10 @@ impl<T: Int> Reduced<T> {
 ///
 /// # Errors
 ///
-/// [`ReduceError::NotFullRank`] if the input is not positive definite, and
-/// [`ReduceError::Range`] if an intermediate exceeds the element width. The
-/// input is never modified.
+/// [`ReduceError::NotFullRank`] if the input is not positive definite,
+/// [`ReduceError::Range`] if an intermediate exceeds the element width, and
+/// [`ReduceError::BudgetExhausted`] if the step budget runs out. The input is
+/// never modified.
 ///
 /// # Examples
 ///
@@ -164,110 +165,256 @@ pub fn lll_deep<T: Int>(gram: &Gram<T>, delta: Delta) -> Result<Reduced<T>, Redu
     reduce_with(gram, delta, true)
 }
 
-/// Reduces with LLL while returning unstable benchmark counters.
-///
-/// Available only with `internals`; counters are not a compatibility promise.
-///
-/// # Errors
-///
-/// As [`lll`].
-#[cfg(feature = "internals")]
-pub fn lll_profiled<T: Int>(
-    gram: &Gram<T>,
-    delta: Delta,
-) -> Result<(Reduced<T>, ReductionStats), ReduceError> {
-    let mut stats = ReductionStats::default();
-    let reduced = reduce_observed(gram, delta, false, &mut stats)?;
-    Ok((reduced, stats))
-}
-
-/// Reduces with deep-insertion LLL while returning unstable benchmark counters.
-///
-/// Available only with `internals`; counters are not a compatibility promise.
-///
-/// # Errors
-///
-/// As [`lll_deep`].
-#[cfg(feature = "internals")]
-pub fn lll_deep_profiled<T: Int>(
-    gram: &Gram<T>,
-    delta: Delta,
-) -> Result<(Reduced<T>, ReductionStats), ReduceError> {
-    let mut stats = ReductionStats::default();
-    let reduced = reduce_observed(gram, delta, true, &mut stats)?;
-    Ok((reduced, stats))
-}
-
-/// A prepared reduction workspace for repeated same-dimension workloads.
-///
-/// One-shot [`lll`] allocates its Gram copy, transform, and factorization
-/// buffers on every call. This type allocates them once and reuses them for
-/// every reduction of the same dimension, so a caller that reduces many bases
-/// of one shape pays setup once. Results are identical to [`lll`] and
-/// [`lll_deep`] on the same input: the descent is the same code over freshly
-/// refactored state.
-///
-/// Each successful call returns fresh output matrices; the only per-call
-/// allocations are those two results. A rejected call leaves the workspace
-/// ready for reuse: the next call copies its input in completely before any
-/// arithmetic runs.
-///
-/// Available only with `internals`; not a compatibility promise.
-#[cfg(feature = "internals")]
-pub struct ReductionWorkspace<T: Int> {
-    buffers: Buffers<T>,
-}
-
-#[cfg(feature = "internals")]
-impl<T: Int> ReductionWorkspace<T> {
-    /// Allocates a workspace for dimension `dimension`.
+/// Unstable reduction surface: benchmark counters and the reusable workspace.
+/// Reachable externally only through the `internals` facade.
+// Unstable items are reachable only through the `internals` facade, so the
+// library target without that feature reports them as unused.
+#[allow(dead_code)]
+pub(crate) mod unstable {
+    use super::{
+        Delta, Gram, Gso, Int, RangeError, ReduceError, Reduced, ReductionObserver, State,
+        Unobserved, reduce_observed, run_descent,
+    };
+    /// Reduces with LLL while returning unstable benchmark counters.
+    ///
+    /// Reachable only through the `internals` facade; counters are not a compatibility promise.
     ///
     /// # Errors
     ///
-    /// [`ReduceError::Range`] with [`RangeError::Dimension`] if `dimension`
-    /// exceeds the crate's maximum matrix dimension.
-    pub fn new(dimension: usize) -> Result<Self, ReduceError> {
-        Ok(Self {
-            buffers: Buffers::new(dimension)?,
-        })
+    /// As [`lll`](super::lll).
+    pub fn lll_profiled<T: Int>(
+        gram: &Gram<T>,
+        delta: Delta,
+    ) -> Result<(Reduced<T>, ReductionStats), ReduceError> {
+        let mut stats = ReductionStats::default();
+        let reduced = reduce_observed(gram, delta, false, &mut stats)?;
+        Ok((reduced, stats))
     }
 
-    /// The dimension this workspace was sized for.
-    #[must_use]
-    pub const fn dim(&self) -> usize {
-        self.buffers.state.gram.rows()
-    }
-
-    /// Ordinary LLL over reused buffers, identical to [`lll`] on the input.
+    /// Reduces with deep-insertion LLL while returning unstable benchmark counters.
+    ///
+    /// Reachable only through the `internals` facade; counters are not a compatibility promise.
     ///
     /// # Errors
     ///
-    /// [`ReduceError::Range`] with [`RangeError::Shape`] if `gram.dim()` does
-    /// not equal [`Self::dim`]; otherwise as [`lll`].
-    pub fn reduce(&mut self, gram: &Gram<T>, delta: Delta) -> Result<Reduced<T>, ReduceError> {
-        self.run(gram, delta, false)
+    /// As [`lll_deep`](super::lll_deep).
+    pub fn lll_deep_profiled<T: Int>(
+        gram: &Gram<T>,
+        delta: Delta,
+    ) -> Result<(Reduced<T>, ReductionStats), ReduceError> {
+        let mut stats = ReductionStats::default();
+        let reduced = reduce_observed(gram, delta, true, &mut stats)?;
+        Ok((reduced, stats))
     }
 
-    /// Deep-insertion LLL over reused buffers, identical to [`lll_deep`].
+    /// A prepared reduction workspace for repeated same-dimension workloads.
     ///
-    /// # Errors
+    /// One-shot [`lll`](super::lll) allocates its Gram copy, transform, and factorization
+    /// buffers on every call. This type allocates them once and reuses them for
+    /// every reduction of the same dimension, so a caller that reduces many bases
+    /// of one shape pays setup once. Results are identical to [`lll`](super::lll) and
+    /// [`lll_deep`](super::lll_deep) on the same input: the descent is the same code over freshly
+    /// refactored state.
     ///
-    /// As [`Self::reduce`].
-    pub fn reduce_deep(&mut self, gram: &Gram<T>, delta: Delta) -> Result<Reduced<T>, ReduceError> {
-        self.run(gram, delta, true)
+    /// Each successful call returns fresh output matrices; the only per-call
+    /// allocations are those two results. A rejected call leaves the workspace
+    /// ready for reuse: the next call copies its input in completely before any
+    /// arithmetic runs.
+    ///
+    /// Reachable only through the `internals` facade; not a compatibility promise.
+    pub struct ReductionWorkspace<T: Int> {
+        buffers: Buffers<T>,
     }
 
-    fn run(&mut self, gram: &Gram<T>, delta: Delta, deep: bool) -> Result<Reduced<T>, ReduceError> {
-        if gram.dim() != self.dim() {
-            return Err(RangeError::Shape {
-                expected: self.dim(),
-                found: gram.dim(),
-            }
-            .into());
+    impl<T: Int> ReductionWorkspace<T> {
+        /// Allocates a workspace for dimension `dimension`.
+        ///
+        /// # Errors
+        ///
+        /// [`ReduceError::Range`] with [`RangeError::Dimension`] if `dimension`
+        /// exceeds the crate's maximum matrix dimension.
+        pub fn new(dimension: usize) -> Result<Self, ReduceError> {
+            Ok(Self {
+                buffers: Buffers::new(dimension)?,
+            })
         }
-        self.buffers
-            .restart_and_run(gram, delta, deep, &mut Unobserved)?;
-        Ok(self.buffers.state.finish_cloned())
+
+        /// The dimension this workspace was sized for.
+        #[must_use]
+        pub const fn dim(&self) -> usize {
+            self.buffers.state.gram.rows()
+        }
+
+        /// Ordinary LLL over reused buffers, identical to [`lll`](super::lll) on the input.
+        ///
+        /// # Errors
+        ///
+        /// [`ReduceError::Range`] with [`RangeError::Shape`] if `gram.dim()` does
+        /// not equal [`Self::dim`]; otherwise as [`lll`](super::lll).
+        pub fn reduce(&mut self, gram: &Gram<T>, delta: Delta) -> Result<Reduced<T>, ReduceError> {
+            self.run(gram, delta, false)
+        }
+
+        /// Deep-insertion LLL over reused buffers, identical to [`lll_deep`](super::lll_deep).
+        ///
+        /// # Errors
+        ///
+        /// As [`Self::reduce`].
+        pub fn reduce_deep(
+            &mut self,
+            gram: &Gram<T>,
+            delta: Delta,
+        ) -> Result<Reduced<T>, ReduceError> {
+            self.run(gram, delta, true)
+        }
+
+        fn run(
+            &mut self,
+            gram: &Gram<T>,
+            delta: Delta,
+            deep: bool,
+        ) -> Result<Reduced<T>, ReduceError> {
+            if gram.dim() != self.dim() {
+                return Err(RangeError::Shape {
+                    expected: self.dim(),
+                    found: gram.dim(),
+                }
+                .into());
+            }
+            self.buffers
+                .restart_and_run(gram, delta, deep, &mut Unobserved)?;
+            Ok(self.buffers.state.finish_cloned())
+        }
+    }
+    /// Internal operation counters for exact basis reduction benchmarks.
+    ///
+    /// `checked_updates` counts checked integer operations in factorization and
+    /// elementary state recurrences. Quotient and adjacent-swap counters expose
+    /// the work that those recurrences do not distinguish.
+    ///
+    /// Reachable only through the `internals` facade; not a compatibility promise.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct ReductionStats {
+        /// Full exact factorizations.
+        pub factorizations: u64,
+        /// Completed reduction-loop iterations.
+        pub iterations: u64,
+        /// Size-reduction coefficients examined.
+        pub size_reduction_checks: u64,
+        /// Coefficients proved to have a zero nearest quotient without division.
+        pub zero_quotients: u64,
+        /// Coefficients that entered checked nearest division.
+        pub quotient_divisions: u64,
+        /// Nonzero size reductions.
+        pub size_reductions: u64,
+        /// Adjacent basis swaps.
+        pub swaps: u64,
+        /// Later GSO coefficients updated across adjacent swaps.
+        pub swap_update_terms: u64,
+        /// Deep insertions.
+        pub deep_insertions: u64,
+        /// Exact suffix-sum terms formed by deep-insertion predicates.
+        pub deep_predicate_terms: u64,
+        /// Deep-predicate suffix sums rescaled to a larger common denominator.
+        pub deep_scale_rescalings: u64,
+        /// Exact divisions used to form deep-predicate weights and rescalings.
+        pub deep_exact_divisions: u64,
+        /// Largest deep-predicate denominator width in bits.
+        pub deep_max_denominator_bits: u64,
+        /// Largest deep-predicate common-scale width in bits.
+        pub deep_max_scale_bits: u64,
+        /// Full Gram buffers copied.
+        pub gram_copies: u64,
+        /// Checked operations in factorization and elementary updates.
+        pub checked_updates: u64,
+    }
+
+    impl ReductionObserver for ReductionStats {
+        fn gram_copy(&mut self) {
+            self.gram_copies += 1;
+        }
+
+        fn factorization(&mut self, dimension: usize) {
+            self.factorizations += 1;
+            for remaining in (0..dimension).rev() {
+                let entries = u64::try_from(remaining * remaining).unwrap_or(u64::MAX);
+                self.checked_updates = self.checked_updates.saturating_add(4 * entries);
+            }
+        }
+
+        fn iteration(&mut self) {
+            self.iterations += 1;
+        }
+
+        fn quotient_check(&mut self, zero_proved: bool) {
+            self.size_reduction_checks += 1;
+            if zero_proved {
+                self.zero_quotients += 1;
+            } else {
+                self.quotient_divisions += 1;
+            }
+        }
+
+        fn size_reduction(&mut self, checked_updates: u64) {
+            self.size_reductions += 1;
+            self.checked_updates += checked_updates;
+        }
+
+        fn swaps(&mut self, count: u64, update_terms: u64, checked_updates: u64) {
+            self.swaps += count;
+            self.swap_update_terms += update_terms;
+            self.checked_updates += checked_updates;
+        }
+
+        fn deep_insertion(&mut self) {
+            self.deep_insertions += 1;
+        }
+
+        fn deep_predicate_term(&mut self, scale_rescaled: bool, exact_divisions: u64) {
+            self.deep_predicate_terms += 1;
+            self.deep_scale_rescalings += u64::from(scale_rescaled);
+            self.deep_exact_divisions += exact_divisions;
+        }
+
+        fn deep_denominator<T: Int>(&mut self, denominator: T, scale: T) {
+            let denominator_bits = u64::from(i128::BITS - denominator.widen().leading_zeros());
+            let scale_bits = u64::from(i128::BITS - scale.widen().leading_zeros());
+            self.deep_max_denominator_bits = self.deep_max_denominator_bits.max(denominator_bits);
+            self.deep_max_scale_bits = self.deep_max_scale_bits.max(scale_bits);
+        }
+    }
+    /// Reusable reduction storage: the transactional Gram-plus-transform state and
+    /// the exact factorization, sized for one dimension.
+    struct Buffers<T: Int> {
+        state: State<T>,
+        gso: Gso<T>,
+    }
+
+    impl<T: Int> Buffers<T> {
+        fn new(dimension: usize) -> Result<Self, ReduceError> {
+            Ok(Self {
+                state: State::empty(dimension)?,
+                gso: Gso::empty(dimension)?,
+            })
+        }
+
+        /// Copies `gram` in, refactors from scratch over the reused buffers, and
+        /// runs one full descent.
+        fn restart_and_run<O: ReductionObserver>(
+            &mut self,
+            gram: &Gram<T>,
+            delta: Delta,
+            deep: bool,
+            observer: &mut O,
+        ) -> Result<(), ReduceError> {
+            let n = gram.dim();
+            self.state.reset(gram);
+            observer.gram_copy();
+            self.gso.refactor_from_symmetric_matrix(&self.state.gram)?;
+            observer.factorization(n);
+            let Self { state, gso } = &mut *self;
+            run_descent(state, gso, delta, deep, observer)
+        }
     }
 }
 
@@ -391,104 +538,6 @@ trait ReductionObserver {
 struct Unobserved;
 
 impl ReductionObserver for Unobserved {}
-
-/// Internal operation counters for exact basis reduction benchmarks.
-///
-/// `checked_updates` counts checked integer operations in factorization and
-/// elementary state recurrences. Quotient and adjacent-swap counters expose
-/// the work that those recurrences do not distinguish.
-#[cfg(feature = "internals")]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ReductionStats {
-    /// Full exact factorizations.
-    pub factorizations: u64,
-    /// Completed reduction-loop iterations.
-    pub iterations: u64,
-    /// Size-reduction coefficients examined.
-    pub size_reduction_checks: u64,
-    /// Coefficients proved to have a zero nearest quotient without division.
-    pub zero_quotients: u64,
-    /// Coefficients that entered checked nearest division.
-    pub quotient_divisions: u64,
-    /// Nonzero size reductions.
-    pub size_reductions: u64,
-    /// Adjacent basis swaps.
-    pub swaps: u64,
-    /// Later GSO coefficients updated across adjacent swaps.
-    pub swap_update_terms: u64,
-    /// Deep insertions.
-    pub deep_insertions: u64,
-    /// Exact suffix-sum terms formed by deep-insertion predicates.
-    pub deep_predicate_terms: u64,
-    /// Deep-predicate suffix sums rescaled to a larger common denominator.
-    pub deep_scale_rescalings: u64,
-    /// Exact divisions used to form deep-predicate weights and rescalings.
-    pub deep_exact_divisions: u64,
-    /// Largest deep-predicate denominator width in bits.
-    pub deep_max_denominator_bits: u64,
-    /// Largest deep-predicate common-scale width in bits.
-    pub deep_max_scale_bits: u64,
-    /// Full Gram buffers copied.
-    pub gram_copies: u64,
-    /// Checked operations in factorization and elementary updates.
-    pub checked_updates: u64,
-}
-
-#[cfg(feature = "internals")]
-impl ReductionObserver for ReductionStats {
-    fn gram_copy(&mut self) {
-        self.gram_copies += 1;
-    }
-
-    fn factorization(&mut self, dimension: usize) {
-        self.factorizations += 1;
-        for remaining in (0..dimension).rev() {
-            let entries = u64::try_from(remaining * remaining).unwrap_or(u64::MAX);
-            self.checked_updates = self.checked_updates.saturating_add(4 * entries);
-        }
-    }
-
-    fn iteration(&mut self) {
-        self.iterations += 1;
-    }
-
-    fn quotient_check(&mut self, zero_proved: bool) {
-        self.size_reduction_checks += 1;
-        if zero_proved {
-            self.zero_quotients += 1;
-        } else {
-            self.quotient_divisions += 1;
-        }
-    }
-
-    fn size_reduction(&mut self, checked_updates: u64) {
-        self.size_reductions += 1;
-        self.checked_updates += checked_updates;
-    }
-
-    fn swaps(&mut self, count: u64, update_terms: u64, checked_updates: u64) {
-        self.swaps += count;
-        self.swap_update_terms += update_terms;
-        self.checked_updates += checked_updates;
-    }
-
-    fn deep_insertion(&mut self) {
-        self.deep_insertions += 1;
-    }
-
-    fn deep_predicate_term(&mut self, scale_rescaled: bool, exact_divisions: u64) {
-        self.deep_predicate_terms += 1;
-        self.deep_scale_rescalings += u64::from(scale_rescaled);
-        self.deep_exact_divisions += exact_divisions;
-    }
-
-    fn deep_denominator<T: Int>(&mut self, denominator: T, scale: T) {
-        let denominator_bits = u64::from(i128::BITS - denominator.widen().leading_zeros());
-        let scale_bits = u64::from(i128::BITS - scale.widen().leading_zeros());
-        self.deep_max_denominator_bits = self.deep_max_denominator_bits.max(denominator_bits);
-        self.deep_max_scale_bits = self.deep_max_scale_bits.max(scale_bits);
-    }
-}
 
 /// Symmetric Gram matrix plus its accumulated transform.
 ///
@@ -618,48 +667,13 @@ impl<T: Int> State<T> {
 
     /// Materializes the result without consuming the buffers, so a prepared
     /// workspace keeps them for the next reduction.
-    #[cfg(feature = "internals")]
+    // Called only by the reusable workspace behind the `internals` facade.
+    #[allow(dead_code)]
     fn finish_cloned(&self) -> Reduced<T> {
         Reduced {
             gram: Gram::new(self.gram.clone()).expect("reduction preserves symmetry"),
             transform: self.transform.clone(),
         }
-    }
-}
-
-/// Reusable reduction storage: the transactional Gram-plus-transform state and
-/// the exact factorization, sized for one dimension.
-#[cfg(feature = "internals")]
-struct Buffers<T: Int> {
-    state: State<T>,
-    gso: Gso<T>,
-}
-
-#[cfg(feature = "internals")]
-impl<T: Int> Buffers<T> {
-    fn new(dimension: usize) -> Result<Self, ReduceError> {
-        Ok(Self {
-            state: State::empty(dimension)?,
-            gso: Gso::empty(dimension)?,
-        })
-    }
-
-    /// Copies `gram` in, refactors from scratch over the reused buffers, and
-    /// runs one full descent.
-    fn restart_and_run<O: ReductionObserver>(
-        &mut self,
-        gram: &Gram<T>,
-        delta: Delta,
-        deep: bool,
-        observer: &mut O,
-    ) -> Result<(), ReduceError> {
-        let n = gram.dim();
-        self.state.reset(gram);
-        observer.gram_copy();
-        self.gso.refactor_from_symmetric_matrix(&self.state.gram)?;
-        observer.factorization(n);
-        let Self { state, gso } = &mut *self;
-        run_descent(state, gso, delta, deep, observer)
     }
 }
 
@@ -853,12 +867,11 @@ fn deep_insertion_point<T: Int, O: ReductionObserver>(
 
 #[cfg(test)]
 mod tests {
+    use super::unstable::{ReductionWorkspace, lll_deep_profiled, lll_profiled};
     use super::{
         Delta, State, Unobserved, deep_insertion_point, div_nearest, gauss, is_reduced, lll,
         lll_deep, narrow,
     };
-    #[cfg(feature = "internals")]
-    use super::{ReductionWorkspace, lll_deep_profiled, lll_profiled};
     use crate::basis::{Basis, Gram};
     use crate::error::{LatticeError, RangeError};
     use crate::gso::Gso;
@@ -1082,7 +1095,6 @@ mod tests {
         assert_eq!(div_nearest(i128::MIN, i128::MAX), Ok(-1));
     }
 
-    #[cfg(feature = "internals")]
     #[test]
     fn profiled_quotient_counters_partition_checks() {
         let basis = Basis::<i64>::from_rows(3, 3, &[1, 10, 0, 0, 1, 10, 0, 0, 1]).unwrap();
@@ -1098,7 +1110,6 @@ mod tests {
         assert!(stats.swap_update_terms > 0);
     }
 
-    #[cfg(feature = "internals")]
     #[test]
     fn profiled_deep_counters_account_for_suffix_arithmetic() {
         let basis =
@@ -1124,7 +1135,6 @@ mod tests {
 
     /// A small deterministic skewed positive-definite Gram matrix: a unit
     /// lower-triangular basis with bounded entries, so it is always full rank.
-    #[cfg(feature = "internals")]
     fn skewed_gram<T: Int>(seed: u64, n: usize) -> Option<Gram<T>> {
         let mut rng = seed;
         let mut entries = vec![T::ZERO; n * n];
@@ -1146,7 +1156,6 @@ mod tests {
         Some(gram)
     }
 
-    #[cfg(feature = "internals")]
     fn prepared_matches_one_shot<T: Int>() {
         // One workspace reused across every dimension-matched input, exactly
         // the repeated-caller shape it exists for. Outputs must equal the
@@ -1174,7 +1183,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "internals")]
     #[test]
     fn prepared_workspace_matches_one_shot_at_every_width() {
         prepared_matches_one_shot::<i32>();
@@ -1182,7 +1190,6 @@ mod tests {
         prepared_matches_one_shot::<i128>();
     }
 
-    #[cfg(feature = "internals")]
     fn rejected_calls_leave_the_workspace_reusable<T: Int>() {
         // Dimensions beyond the crate maximum are refused at allocation.
         assert!(ReductionWorkspace::<T>::new(crate::int::MAX_DIM + 1).is_err());
@@ -1235,7 +1242,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "internals")]
     #[test]
     fn rejected_calls_leave_the_workspace_reusable_at_every_width() {
         rejected_calls_leave_the_workspace_reusable::<i32>();

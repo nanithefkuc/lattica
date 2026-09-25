@@ -7,8 +7,8 @@
 //! structure belongs in `fff`, on the consumer's side of the boundary.
 //!
 //! Only the lattice path is public: reducing integers into residues and
-//! lifting them out. The composition laws — `add`, `sub`, `neg`, `mul` —
-//! exist for the unstable `internals` surface; no operation in this crate or
+//! lifting them out. The composition laws — `add`, `sub`, `neg`, `mul` — live
+//! behind the unstable `internals` facade; no operation in this crate or
 //! its consumers composes residues, and general modular arithmetic is a
 //! different mathematical object from a lattice.
 //!
@@ -114,24 +114,26 @@ impl Zq {
 
     /// The centered representative of a residue, in `[-q/2, q/2)`.
     ///
-    /// # Panics
-    ///
-    /// Debug builds assert that `r` is already reduced.
+    /// The input need not be reduced: a value at or above `q` is reduced
+    /// first, so every `u32` lands in its own residue class.
     // Casts: the result lies in `[-q/2, q/2)` with `q <= u32::MAX`, so its
     // magnitude is at most `2^31`, which `i32` represents.
     #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
     #[must_use]
     pub const fn center(&self, r: u32) -> i32 {
-        debug_assert!(r < self.q, "residue is not reduced");
+        // The fast path keeps the common reduced case branch-free of
+        // division; only unreduced input pays for `reduce_u64`.
+        let r = if r < self.q {
+            r
+        } else {
+            self.reduce_u64(r as u64)
+        };
         if r < self.threshold {
             r as i32
         } else {
             (r as i64 - self.q as i64) as i32
         }
     }
-
-    /// Lifts a residue to the integer of least magnitude in its class.
-    ///
     /// Identical to [`center`](Zq::center); the two names exist because the
     /// operations mean different things at the call site. `center` normalizes a
     /// residue, while `lift` crosses from `Z_q` into `Z` on the Construction A
@@ -139,55 +141,6 @@ impl Zq {
     #[must_use]
     pub const fn lift(&self, r: u32) -> i32 {
         self.center(r)
-    }
-
-    /// Modular addition of two reduced residues.
-    ///
-    /// Unstable: no lattice path composes residues, so this exists only behind
-    /// the `internals` feature.
-    // Cast: the sum of two values below `q` is below `2q`, and one conditional
-    // subtraction brings it below `q`.
-    #[cfg(feature = "internals")]
-    #[allow(clippy::cast_possible_truncation)]
-    #[must_use]
-    pub const fn add(&self, a: u32, b: u32) -> u32 {
-        debug_assert!(a < self.q && b < self.q, "operand is not reduced");
-        let s = a as u64 + b as u64;
-        if s >= self.q as u64 {
-            (s - self.q as u64) as u32
-        } else {
-            s as u32
-        }
-    }
-
-    /// Modular subtraction of two reduced residues.
-    ///
-    /// Unstable: as [`add`](Self::add).
-    #[cfg(feature = "internals")]
-    #[must_use]
-    pub const fn sub(&self, a: u32, b: u32) -> u32 {
-        debug_assert!(a < self.q && b < self.q, "operand is not reduced");
-        if a >= b { a - b } else { self.q - (b - a) }
-    }
-
-    /// Modular negation of a reduced residue.
-    ///
-    /// Unstable: as [`add`](Self::add).
-    #[cfg(feature = "internals")]
-    #[must_use]
-    pub const fn neg(&self, a: u32) -> u32 {
-        debug_assert!(a < self.q, "operand is not reduced");
-        if a == 0 { 0 } else { self.q - a }
-    }
-
-    /// Modular multiplication of two reduced residues.
-    ///
-    /// Unstable: as [`add`](Self::add).
-    #[cfg(feature = "internals")]
-    #[must_use]
-    pub const fn mul(&self, a: u32, b: u32) -> u32 {
-        debug_assert!(a < self.q && b < self.q, "operand is not reduced");
-        self.reduce_u64(a as u64 * b as u64)
     }
 
     /// Reduces a slice of signed values into residues.
@@ -218,6 +171,68 @@ impl Zq {
             *d = self.lift(s);
         }
         Ok(())
+    }
+}
+
+/// Unstable residue-composition operations for [`Zq`].
+///
+/// Operands must be reduced residues: an unreduced operand wraps in release
+/// builds, guarded only by debug assertions.
+///
+/// No lattice path composes residues; general modular arithmetic is a
+/// different mathematical object from a lattice. Reachable externally only
+/// through the `internals` facade; not a compatibility promise.
+#[allow(dead_code)]
+pub(crate) mod composition {
+    use super::Zq;
+
+    /// Unstable composition laws for [`Zq`].
+    pub trait ZqComposition {
+        /// Modular addition of two reduced residues.
+        #[must_use]
+        fn add(&self, a: u32, b: u32) -> u32;
+
+        /// Modular subtraction of two reduced residues.
+        #[must_use]
+        fn sub(&self, a: u32, b: u32) -> u32;
+
+        /// Modular negation of a reduced residue.
+        #[must_use]
+        fn neg(&self, a: u32) -> u32;
+
+        /// Modular multiplication of two reduced residues.
+        #[must_use]
+        fn mul(&self, a: u32, b: u32) -> u32;
+    }
+
+    impl ZqComposition for Zq {
+        // Cast: the sum of two values below `q` is below `2q`, and one
+        // conditional subtraction brings it below `q`.
+        #[allow(clippy::cast_possible_truncation)]
+        fn add(&self, a: u32, b: u32) -> u32 {
+            debug_assert!(a < self.q && b < self.q, "operand is not reduced");
+            let s = u64::from(a) + u64::from(b);
+            if s >= u64::from(self.q) {
+                (s - u64::from(self.q)) as u32
+            } else {
+                s as u32
+            }
+        }
+
+        fn sub(&self, a: u32, b: u32) -> u32 {
+            debug_assert!(a < self.q && b < self.q, "operand is not reduced");
+            if a >= b { a - b } else { self.q - (b - a) }
+        }
+
+        fn neg(&self, a: u32) -> u32 {
+            debug_assert!(a < self.q, "operand is not reduced");
+            if a == 0 { 0 } else { self.q - a }
+        }
+
+        fn mul(&self, a: u32, b: u32) -> u32 {
+            debug_assert!(a < self.q && b < self.q, "operand is not reduced");
+            self.reduce_u64(u64::from(a) * u64::from(b))
+        }
     }
 }
 
@@ -292,6 +307,26 @@ mod tests {
     }
 
     #[test]
+    fn center_reduces_unreduced_input_into_its_class() {
+        let r = zq(7);
+        // Pre-fix this wrapped to `-8`, which is a different class mod 7.
+        assert_eq!(r.center(u32::MAX), 3);
+        assert_eq!(r.center(8), 1);
+        assert_eq!(r.center(19), -2);
+        for q in [2u32, 3, 7, 255, 65_521] {
+            let r = zq(q);
+            for x in [q, q + 1, 2 * q + 1, u32::MAX - 1, u32::MAX] {
+                let c = i64::from(r.center(x));
+                assert_eq!(
+                    c.rem_euclid(i64::from(q)),
+                    i64::from(x % q),
+                    "q = {q}, x = {x}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn lift_round_trips_through_reduction() {
         for q in 2..=64u32 {
             let r = zq(q);
@@ -304,9 +339,9 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "internals")]
     #[test]
     fn ring_operations_agree_with_integer_arithmetic() {
+        use super::composition::ZqComposition;
         for q in 2..=32u32 {
             let r = zq(q);
             for a in 0..q {
