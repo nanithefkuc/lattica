@@ -26,7 +26,7 @@ listed below.
 Column-major coefficients; strided vectors for array-of-structures (AoS)
 batches and coordinate planes for structure-of-arrays (SoA) batches.
 
-### Sixteen-output structure-of-arrays dispatch
+### 16-output SoA Dispatch
 
 16-by-16 `transform_batch_soa`, Criterion middle estimates.
 
@@ -39,7 +39,7 @@ batches and coordinate planes for structure-of-arrays (SoA) batches.
 | 257 | 8.892/8.058 | 6.747/5.835 |
 | 257 (block-8) | 9.455/8.044 | 3.229/3.056 |
 
-### Twenty-four-output structure-of-arrays dispatch
+### 24-output SoA Dispatch
 
 24-by-24 `transform_batch_soa`.
 
@@ -54,7 +54,7 @@ batches and coordinate planes for structure-of-arrays (SoA) batches.
 | 128 | 8,054/8,079 | 2,962/2,818 |
 | 257 | 22,758/19,925 | 6,660/6,435 |
 
-### Twenty-four-output array-of-structures dispatch
+### 24-output AoS Dispatch
 
 24-by-24 `transform_batch`, Criterion means. The portable build disables
 default features; the dispatched build enables `simd`.
